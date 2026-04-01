@@ -30,7 +30,7 @@ public class ReviewSession {
 
     private String promptName;
 
-    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.EAGER)
+    @OneToMany(cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY)
     @JoinColumn(name = "session_id")
     @OrderBy("createdAt ASC")
     private List<ConversationMessage> messages = new ArrayList<>();

@@ -18,6 +18,8 @@ import java.util.Optional;
 @Service
 public class CodeReviewService {
 
+    static final int MAX_DIFF_CHARS_FOR_CONTEXT = 60000;
+
     private final GiteaApiClient giteaApiClient;
     private final AnthropicClient anthropicClient;
     private final PromptService promptService;
@@ -117,7 +119,8 @@ public class CodeReviewService {
                         "Description: " + (payload.getIssue().getBody() != null ? payload.getIssue().getBody() : "N/A");
                 if (diff != null && !diff.isBlank()) {
                     // Truncate diff to avoid excessively large context
-                    String truncatedDiff = diff.length() > 60000 ? diff.substring(0, 60000) + "\n...(truncated)" : diff;
+                    String truncatedDiff = diff.length() > MAX_DIFF_CHARS_FOR_CONTEXT
+                            ? diff.substring(0, MAX_DIFF_CHARS_FOR_CONTEXT) + "\n...(truncated)" : diff;
                     prContext += "\n\nDiff:\n```diff\n" + truncatedDiff + "\n```";
                 }
                 sessionService.addMessage(session, "user", prContext);
@@ -175,7 +178,8 @@ public class CodeReviewService {
 
     private String buildPrUpdateMessage(String prTitle, String diff) {
         // Truncate diff for conversation context to avoid excessively large messages
-        String truncatedDiff = diff.length() > 60000 ? diff.substring(0, 60000) + "\n...(truncated)" : diff;
+        String truncatedDiff = diff.length() > MAX_DIFF_CHARS_FOR_CONTEXT
+                ? diff.substring(0, MAX_DIFF_CHARS_FOR_CONTEXT) + "\n...(truncated)" : diff;
         return "The pull request '" + prTitle + "' has been updated with new changes. " +
                 "Please review the updated diff:\n```diff\n" + truncatedDiff + "\n```";
     }
