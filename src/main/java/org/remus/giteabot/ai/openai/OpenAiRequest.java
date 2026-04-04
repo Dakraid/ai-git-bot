@@ -12,7 +12,7 @@ public class OpenAiRequest {
 
     private String model;
 
-    @JsonProperty("max_tokens")
+    @JsonProperty("max_completion_tokens")
     private int maxTokens;
 
     private List<Message> messages;

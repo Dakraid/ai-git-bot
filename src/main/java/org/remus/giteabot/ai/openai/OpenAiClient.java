@@ -61,7 +61,7 @@ public class OpenAiClient extends AbstractAiClient {
         String normalized = body.toLowerCase(Locale.ROOT);
         return normalized.contains("maximum context length")
                 || normalized.contains("too many tokens")
-                || normalized.contains("max_tokens");
+                || normalized.contains("max_completion_tokens");
     }
 
     private String doRequest(String model, int maxTokens,
