@@ -192,10 +192,9 @@ public class GiteaApiClient {
     public void deleteFile(String owner, String repo, String path, String message,
                            String branch, String sha, String tokenOverride) {
         log.info("Deleting file {} on branch '{}' in {}/{}", path, branch, owner, repo);
-        getClient(tokenOverride).delete()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/api/v1/repos/{owner}/{repo}/contents/{path}")
-                        .build(owner, repo, path))
+        getClient(tokenOverride).method(org.springframework.http.HttpMethod.DELETE)
+                .uri("/api/v1/repos/{owner}/{repo}/contents/{path}", owner, repo, path)
+                .body(new DeleteFileRequest(message, branch, sha))
                 .retrieve()
                 .toBodilessEntity();
         log.info("File {} deleted successfully", path);
@@ -253,4 +252,5 @@ public class GiteaApiClient {
     record CreateFileRequest(String content, String message, String branch) {}
     record UpdateFileRequest(String content, String message, String branch, String sha) {}
     record CreatePullRequest(String title, String body, String head, String base) {}
+    record DeleteFileRequest(String message, String branch, String sha) {}
 }
