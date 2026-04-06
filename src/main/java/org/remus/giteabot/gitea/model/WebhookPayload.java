@@ -25,10 +25,6 @@ public class WebhookPayload {
 
     private Owner sender;
 
-    private Owner assignee;
-
-    private java.util.List<Owner> assignees;
-
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PullRequest {
@@ -99,6 +95,10 @@ public class WebhookPayload {
 
         @JsonProperty("pull_request")
         private IssuePullRequest pullRequest;
+
+        private Owner assignee;
+
+        private java.util.List<Owner> assignees;
     }
 
     @Data

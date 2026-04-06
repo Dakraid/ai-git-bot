@@ -22,6 +22,13 @@ public class AgentConfigProperties {
     private int maxFiles = 10;
 
     /**
+     * Maximum tokens for AI responses during issue implementation.
+     * This is typically higher than the default for code reviews since
+     * implementation responses include full file contents.
+     */
+    private int maxTokens = 16384;
+
+    /**
      * Whitelist of repositories (in "owner/repo" format) where the agent is active.
      * If empty, the agent is active on all repositories.
      */
@@ -31,4 +38,23 @@ public class AgentConfigProperties {
      * Prefix for branches created by the agent.
      */
     private String branchPrefix = "ai-agent/";
+
+    /**
+     * Validation settings.
+     */
+    private ValidationConfig validation = new ValidationConfig();
+
+    @Data
+    public static class ValidationConfig {
+        /**
+         * Whether to validate generated code syntax before committing.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Maximum number of validation/correction iterations.
+         * If code fails validation, it will be sent back to AI for fixes up to this many times.
+         */
+        private int maxRetries = 3;
+    }
 }
