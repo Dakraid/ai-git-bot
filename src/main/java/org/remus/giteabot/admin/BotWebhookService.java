@@ -8,9 +8,11 @@ import org.remus.giteabot.agent.validation.ToolExecutionService;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.PromptService;
+import org.remus.giteabot.bitbucket.BitbucketApiClient;
 import org.remus.giteabot.gitea.GiteaApiClient;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.remus.giteabot.repository.RepositoryApiClient;
+import org.remus.giteabot.repository.RepositoryType;
 import org.remus.giteabot.review.CodeReviewService;
 import org.remus.giteabot.session.SessionService;
 import org.springframework.scheduling.annotation.Async;
@@ -216,6 +218,9 @@ public class BotWebhookService {
         GitIntegration gitIntegration = bot.getGitIntegration();
         RestClient restClient = giteaClientFactory.getClient(gitIntegration);
         String token = giteaClientFactory.getDecryptedToken(gitIntegration);
-        return new GiteaApiClient(restClient, gitIntegration.getUrl(), token);
+        return switch (gitIntegration.getProviderType()) {
+            case BITBUCKET -> new BitbucketApiClient(restClient, gitIntegration.getUrl(), token);
+            case GITEA, GITLAB -> new GiteaApiClient(restClient, gitIntegration.getUrl(), token);
+        };
     }
 }

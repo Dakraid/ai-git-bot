@@ -7,6 +7,7 @@ This document describes the high-level architecture of the AI Gitea Bot, includi
 ```mermaid
 graph LR
     Gitea["Gitea Instance"]
+    Bitbucket["Bitbucket Cloud"]
     Bot["AI Gitea Bot"]
     AI["AI Provider<br/>(Anthropic / OpenAI / Ollama / llama.cpp)"]
     DB["PostgreSQL Database"]
@@ -16,14 +17,59 @@ graph LR
     Bot -- "Post review/comment" --> Gitea
     Bot -- "Fetch reviews & comments" --> Gitea
     Bot -- "Add reaction" --> Gitea
+    Bitbucket -- "Webhook (PR/Comment event)" --> Bot
+    Bot -- "Fetch PR diff" --> Bitbucket
+    Bot -- "Post review/comment" --> Bitbucket
     Bot -- "Review diff / Chat" --> AI
     AI -- "Review text" --> Bot
     Bot -- "Config & Sessions" --> DB
 ```
 
-The bot sits between a Gitea instance and a configurable AI provider. When a pull request is opened or updated, Gitea sends a webhook to the bot. The bot fetches the diff, sends it to the configured AI provider for review, and posts the review back as a PR comment. All configuration (AI integrations, Git integrations, bots) and conversation sessions are persisted in a database.
+The bot sits between one or more Git hosting providers (Gitea, Bitbucket Cloud) and a configurable AI provider. When a pull request is opened or updated, the provider sends a webhook to the bot. The bot fetches the diff, sends it to the configured AI provider for review, and posts the review back as a PR comment. All configuration (AI integrations, Git integrations, bots) and conversation sessions are persisted in a database.
 
-The bot also responds to inline review comments and submitted reviews containing bot mentions by fetching the relevant review data from the Gitea API and posting context-aware replies.
+The bot also responds to inline review comments and submitted reviews containing bot mentions by fetching the relevant review data from the Git provider API and posting context-aware replies.
+
+## Git Provider Architecture
+
+The bot uses a **provider-agnostic abstraction layer** for repository operations:
+
+### RepositoryApiClient Interface
+
+Each Git provider implements `RepositoryApiClient` to provide:
+- Pull request operations (fetch diff, post reviews/comments, reactions)
+- Repository operations (branches, files, trees)
+- Authentication via provider-specific tokens
+
+```
+RepositoryApiClient (interface)
+ ├── GiteaApiClient (Gitea REST API v1)
+ │    └── Auth: Authorization: token <TOKEN>
+ │    └── Base: /api/v1/repos/{owner}/{repo}/...
+ └── BitbucketApiClient (Bitbucket Cloud REST API 2.0)
+      └── Auth: Authorization: Bearer <TOKEN>
+      └── Base: /2.0/repositories/{workspace}/{repo_slug}/...
+```
+
+### Webhook Controllers
+
+Each provider has its own webhook controller that translates provider-specific payloads into the internal `WebhookPayload` model:
+
+| Provider  | Controller                    | Endpoint                                  |
+|-----------|-------------------------------|-------------------------------------------|
+| Gitea     | `GiteaWebhookController`      | `POST /api/webhook/{secret}`              |
+| Bitbucket | `BitbucketWebhookController`  | `POST /api/bitbucket-webhook/{secret}`    |
+
+### GiteaClientFactory
+
+Creates `RestClient` instances with the correct authentication header for each provider type:
+- **Gitea**: `Authorization: token <TOKEN>`
+- **Bitbucket**: `Authorization: Bearer <TOKEN>`
+
+### BotWebhookService
+
+Dispatches to the correct `RepositoryApiClient` implementation based on `GitIntegration.providerType`:
+- `GITEA` → `GiteaApiClient`
+- `BITBUCKET` → `BitbucketApiClient`
 
 ## Component Diagram
 
@@ -259,6 +305,23 @@ erDiagram
 - Receives Gitea webhook payloads for pull request, issue comment, and review comment events
 - Looks up Bot by webhook secret
 - Routes events based on payload structure to `BotWebhookService`
+
+### BitbucketWebhookController
+
+- **Package:** `org.remus.giteabot.bitbucket`
+- **Endpoint:** `POST /api/bitbucket-webhook/{webhookSecret}`
+- Receives Bitbucket Cloud webhook events (via `X-Event-Key` header)
+- Translates Bitbucket payload format to the internal `WebhookPayload` model
+- Supported events: `pullrequest:created`, `pullrequest:updated`, `pullrequest:fulfilled`, `pullrequest:rejected`, `pullrequest:comment_created`
+- Routes translated events to `BotWebhookService`
+
+### BitbucketApiClient
+
+- **Package:** `org.remus.giteabot.bitbucket`
+- Implements `RepositoryApiClient` for Bitbucket Cloud REST API 2.0
+- Maps workspace/repo-slug identifiers from owner/repo parameters
+- All PR and repository operations use `/2.0/repositories/` endpoints
+- Note: Bitbucket Cloud does not support comment reactions (gracefully ignored)
 
 ### BotWebhookService
 
