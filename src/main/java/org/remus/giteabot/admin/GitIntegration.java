@@ -3,6 +3,7 @@ package org.remus.giteabot.admin;
 import jakarta.persistence.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.remus.giteabot.repository.RepositoryType;
 
 import java.time.Instant;
 
@@ -20,7 +21,8 @@ public class GitIntegration {
     private String name;
 
     @Column(nullable = false)
-    private String providerType;
+    @Enumerated(EnumType.STRING)
+    private RepositoryType providerType = RepositoryType.GITEA;
 
     @Column(nullable = false)
     private String url;

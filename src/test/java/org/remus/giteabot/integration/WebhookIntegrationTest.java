@@ -160,7 +160,7 @@ class WebhookIntegrationTest {
 
         GitIntegration git = new GitIntegration();
         git.setName("Test Git Integration");
-        git.setProviderType("gitea");
+        git.setProviderType(org.remus.giteabot.repository.RepositoryType.GITEA);
         git.setUrl("http://localhost:" + giteaPort);
         git.setToken("test-gitea-token");
         git = gitIntegrationService.save(git);
@@ -219,7 +219,7 @@ class WebhookIntegrationTest {
 
         GitIntegration git = new GitIntegration();
         git.setName("Git Close Test");
-        git.setProviderType("gitea");
+        git.setProviderType(org.remus.giteabot.repository.RepositoryType.GITEA);
         git.setUrl("http://localhost:" + giteaPort);
         git.setToken("test-token");
         git = gitIntegrationService.save(git);

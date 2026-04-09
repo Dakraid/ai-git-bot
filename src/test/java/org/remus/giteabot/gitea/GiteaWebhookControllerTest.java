@@ -342,7 +342,7 @@ class GiteaWebhookControllerTest {
         GitIntegration git = new GitIntegration();
         git.setId(1L);
         git.setName("Test Git");
-        git.setProviderType("gitea");
+        git.setProviderType(org.remus.giteabot.repository.RepositoryType.GITEA);
         git.setUrl("http://localhost:3000");
         git.setToken("test-token");
         git.setCreatedAt(Instant.now());

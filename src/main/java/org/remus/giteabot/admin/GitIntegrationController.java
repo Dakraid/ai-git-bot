@@ -1,6 +1,7 @@
 package org.remus.giteabot.admin;
 
 import lombok.extern.slf4j.Slf4j;
+import org.remus.giteabot.repository.RepositoryType;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
@@ -30,7 +31,7 @@ public class GitIntegrationController {
     @GetMapping("/new")
     public String newForm(Model model) {
         model.addAttribute("integration", new GitIntegration());
-        model.addAttribute("providerTypes", List.of("gitea"));
+        model.addAttribute("providerTypes", RepositoryType.values());
         model.addAttribute("activeNav", "git-integrations");
         return "git-integrations/form";
     }
@@ -40,7 +41,7 @@ public class GitIntegrationController {
         return gitIntegrationService.findById(id)
                 .map(integration -> {
                     model.addAttribute("integration", integration);
-                    model.addAttribute("providerTypes", List.of("gitea"));
+                    model.addAttribute("providerTypes", RepositoryType.values());
                     model.addAttribute("activeNav", "git-integrations");
                     return "git-integrations/form";
                 })

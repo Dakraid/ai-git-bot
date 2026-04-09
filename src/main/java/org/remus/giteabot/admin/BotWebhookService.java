@@ -10,6 +10,7 @@ import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.GiteaApiClient;
 import org.remus.giteabot.gitea.model.WebhookPayload;
+import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.review.CodeReviewService;
 import org.remus.giteabot.session.SessionService;
 import org.springframework.scheduling.annotation.Async;
@@ -22,7 +23,7 @@ import org.springframework.web.client.RestClient;
  * <p>
  * This is the bridge between the admin data model and the code-review / agent
  * services.  Each bot gets its own {@link AiClient} (via {@link AiClientFactory})
- * and its own {@link GiteaApiClient} (via {@link GiteaClientFactory}).
+ * and its own {@link RepositoryApiClient} (via {@link GiteaClientFactory}).
  * <p>
  * Actual business logic is delegated to {@link CodeReviewService} and
  * {@link IssueImplementationService}, which are instantiated per-bot with the
@@ -197,8 +198,8 @@ public class BotWebhookService {
      */
     private CodeReviewService createCodeReviewService(Bot bot) {
         AiClient aiClient = aiClientFactory.getClient(bot.getAiIntegration());
-        GiteaApiClient giteaClient = createGiteaClient(bot);
-        return new CodeReviewService(giteaClient, aiClient, promptService, sessionService, bot.getUsername());
+        RepositoryApiClient repoClient = createRepositoryClient(bot);
+        return new CodeReviewService(repoClient, aiClient, promptService, sessionService, bot.getUsername());
     }
 
     /**
@@ -206,17 +207,15 @@ public class BotWebhookService {
      */
     private IssueImplementationService createIssueImplementationService(Bot bot) {
         AiClient aiClient = aiClientFactory.getClient(bot.getAiIntegration());
-        GiteaApiClient giteaClient = createGiteaClient(bot);
-        GitIntegration gitIntegration = bot.getGitIntegration();
-        String giteaUrl = gitIntegration.getUrl();
-        String giteaToken = giteaClientFactory.getDecryptedToken(gitIntegration);
-        return new IssueImplementationService(giteaClient, aiClient, promptService, agentConfig,
-                agentSessionService, toolExecutionService, diffApplyService, giteaUrl, giteaToken);
+        RepositoryApiClient repoClient = createRepositoryClient(bot);
+        return new IssueImplementationService(repoClient, aiClient, promptService, agentConfig,
+                agentSessionService, toolExecutionService, diffApplyService);
     }
 
-    private GiteaApiClient createGiteaClient(Bot bot) {
+    private RepositoryApiClient createRepositoryClient(Bot bot) {
         GitIntegration gitIntegration = bot.getGitIntegration();
         RestClient restClient = giteaClientFactory.getClient(gitIntegration);
-        return new GiteaApiClient(restClient, gitIntegration.getUrl());
+        String token = giteaClientFactory.getDecryptedToken(gitIntegration);
+        return new GiteaApiClient(restClient, gitIntegration.getUrl(), token);
     }
 }
