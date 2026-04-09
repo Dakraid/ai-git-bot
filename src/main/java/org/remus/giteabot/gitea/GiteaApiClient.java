@@ -27,6 +27,10 @@ public class GiteaApiClient {
         this.giteaUrl = giteaUrl;
     }
 
+    public String getGiteaUrl() {
+        return giteaUrl;
+    }
+
     public String getPullRequestDiff(String owner, String repo, Long pullNumber, String tokenOverride) {
         log.info("Fetching diff for PR #{} in {}/{}", pullNumber, owner, repo);
         return getClient(tokenOverride).get()

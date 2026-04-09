@@ -1,11 +1,17 @@
 package org.remus.giteabot.admin;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.remus.giteabot.agent.DiffApplyService;
+import org.remus.giteabot.agent.session.AgentSessionService;
+import org.remus.giteabot.agent.validation.ToolExecutionService;
+import org.remus.giteabot.config.AgentConfigProperties;
+import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.model.WebhookPayload;
+import org.remus.giteabot.session.SessionService;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -19,13 +25,34 @@ class BotWebhookServiceTest {
     private GiteaClientFactory giteaClientFactory;
 
     @Mock
-    private org.remus.giteabot.session.SessionService sessionService;
+    private PromptService promptService;
+
+    @Mock
+    private SessionService sessionService;
+
+    @Mock
+    private AgentConfigProperties agentConfig;
+
+    @Mock
+    private AgentSessionService agentSessionService;
+
+    @Mock
+    private ToolExecutionService toolExecutionService;
+
+    @Mock
+    private DiffApplyService diffApplyService;
 
     @Mock
     private BotService botService;
 
-    @InjectMocks
     private BotWebhookService botWebhookService;
+
+    @BeforeEach
+    void setUp() {
+        botWebhookService = new BotWebhookService(aiClientFactory, giteaClientFactory,
+                promptService, sessionService, agentConfig, agentSessionService,
+                toolExecutionService, diffApplyService, botService);
+    }
 
     @Test
     void isBotUser_senderMatchesBotUsername_returnsTrue() {

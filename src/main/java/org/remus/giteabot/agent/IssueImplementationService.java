@@ -15,8 +15,6 @@ import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.GiteaApiClient;
 import org.remus.giteabot.gitea.model.WebhookPayload;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -29,8 +27,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+/**
+ * Core issue-implementation (agent) business logic.  Not a Spring-managed
+ * singleton — instances are created per-bot by
+ * {@link org.remus.giteabot.admin.BotWebhookService} with the bot's own
+ * {@link AiClient} and {@link GiteaApiClient}.
+ */
 @Slf4j
-@Service
 public class IssueImplementationService {
 
     private static final String AGENT_PROMPT_NAME = "agent";
@@ -48,12 +51,15 @@ public class IssueImplementationService {
     private final ToolExecutionService toolExecutionService;
     private final DiffApplyService diffApplyService;
     private final ObjectMapper objectMapper;
+    private final String giteaUrl;
+    private final String giteaToken;
 
     public IssueImplementationService(GiteaApiClient giteaApiClient,
                                       AiClient aiClient, PromptService promptService,
                                       AgentConfigProperties agentConfig, AgentSessionService sessionService,
                                       ToolExecutionService toolExecutionService,
-                                      DiffApplyService diffApplyService) {
+                                      DiffApplyService diffApplyService,
+                                      String giteaUrl, String giteaToken) {
         this.giteaApiClient = giteaApiClient;
         this.aiClient = aiClient;
         this.promptService = promptService;
@@ -62,9 +68,10 @@ public class IssueImplementationService {
         this.toolExecutionService = toolExecutionService;
         this.diffApplyService = diffApplyService;
         this.objectMapper = new ObjectMapper();
+        this.giteaUrl = giteaUrl;
+        this.giteaToken = giteaToken;
     }
 
-    @Async
     public void handleIssueAssigned(WebhookPayload payload) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -319,7 +326,7 @@ public class IssueImplementationService {
 
                     // Prepare workspace if not already done
                     if (workspaceDir == null) {
-                        ToolExecutionService.WorkspaceResult workspaceResult = toolExecutionService.prepareWorkspace(owner, repo, defaultBranch, plan.getFileChanges());
+                        ToolExecutionService.WorkspaceResult workspaceResult = toolExecutionService.prepareWorkspace(owner, repo, defaultBranch, plan.getFileChanges(), giteaUrl, giteaToken);
                         if (!workspaceResult.success()) {
                             log.error("Failed to prepare workspace for validation: {}", workspaceResult.error());
                             // Post error as comment so it's visible
@@ -584,7 +591,7 @@ public class IssueImplementationService {
                 // Prepare workspace if not already done
                 if (workspaceDir == null) {
                     ToolExecutionService.WorkspaceResult workspaceResult =
-                            toolExecutionService.prepareWorkspace(owner, repo, workingBranch, currentPlan.getFileChanges());
+                            toolExecutionService.prepareWorkspace(owner, repo, workingBranch, currentPlan.getFileChanges(), giteaUrl, giteaToken);
                     if (!workspaceResult.success()) {
                         log.error("Failed to prepare workspace for validation: {}", workspaceResult.error());
                         giteaApiClient.postComment(owner, repo, issueNumber,
@@ -674,7 +681,6 @@ public class IssueImplementationService {
      * Handles a comment on an issue that mentions the bot.
      * This allows users to request changes or continue work after initial implementation.
      */
-    @Async
     public void handleIssueComment(WebhookPayload payload) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();

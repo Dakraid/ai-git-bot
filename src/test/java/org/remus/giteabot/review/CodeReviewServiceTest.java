@@ -1,13 +1,12 @@
 package org.remus.giteabot.review;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
-import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.GiteaApiClient;
 import org.remus.giteabot.gitea.model.GiteaReview;
@@ -49,11 +48,13 @@ class CodeReviewServiceTest {
     @Mock
     private SessionService sessionService;
 
-    @Mock
-    private BotConfigProperties botConfig;
-
-    @InjectMocks
     private CodeReviewService codeReviewService;
+
+    @BeforeEach
+    void setUp() {
+        codeReviewService = new CodeReviewService(giteaApiClient, aiClient,
+                promptService, sessionService, "ai_bot");
+    }
 
     @Test
     void reviewPullRequest_postsReview() {
@@ -293,8 +294,6 @@ class CodeReviewServiceTest {
         session.addMessage("user", "Initial context");
         session.addMessage("assistant", "Initial review");
 
-        when(botConfig.getAlias()).thenReturn("@ai_bot");
-        when(botConfig.getUsername()).thenReturn("ai_bot");
         when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
@@ -362,8 +361,6 @@ class CodeReviewServiceTest {
     void handleReviewSubmitted_noBotMentions_doesNothing() {
         WebhookPayload payload = createReviewSubmittedPayload();
 
-        when(botConfig.getAlias()).thenReturn("@ai_bot");
-        when(botConfig.getUsername()).thenReturn("ai_bot");
         when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);
@@ -388,8 +385,6 @@ class CodeReviewServiceTest {
     void handleReviewSubmitted_botOwnComments_filtered() {
         WebhookPayload payload = createReviewSubmittedPayload();
 
-        when(botConfig.getAlias()).thenReturn("@ai_bot");
-        when(botConfig.getUsername()).thenReturn("ai_bot");
         when(promptService.resolveGiteaToken(isNull(), isNull())).thenReturn(null);
         when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
         when(promptService.resolveModel(isNull(), isNull())).thenReturn(null);

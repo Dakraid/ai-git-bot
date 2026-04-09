@@ -86,6 +86,21 @@ public class GiteaWebhookController {
                 botWebhookService.handleBotCommand(bot, payload);
                 return ResponseEntity.ok("command received");
             }
+            // Issue comment (not a PR) — route to agent
+            botWebhookService.handleIssueComment(bot, payload);
+            return ResponseEntity.ok("issue comment received");
+        }
+
+        // Handle issue assignment events (agent feature)
+        if ("assigned".equals(payload.getAction()) && payload.getIssue() != null
+                && payload.getPullRequest() == null) {
+            // Check if the assignee is the bot
+            if (payload.getIssue().getAssignee() != null
+                    && bot.getUsername() != null
+                    && bot.getUsername().equalsIgnoreCase(payload.getIssue().getAssignee().getLogin())) {
+                botWebhookService.handleIssueAssigned(bot, payload);
+                return ResponseEntity.ok("agent triggered");
+            }
             return ResponseEntity.ok("ignored");
         }
 

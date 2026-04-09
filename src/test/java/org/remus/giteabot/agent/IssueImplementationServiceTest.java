@@ -54,7 +54,8 @@ class IssueImplementationServiceTest {
         agentConfig.setMaxFiles(10);
         agentConfig.setBranchPrefix("ai-agent/");
         service = new IssueImplementationService(giteaApiClient, aiClient, promptService, agentConfig,
-                sessionService, toolExecutionService, diffApplyService);
+                sessionService, toolExecutionService, diffApplyService,
+                "http://localhost:3000", "test-token");
     }
 
     @Test

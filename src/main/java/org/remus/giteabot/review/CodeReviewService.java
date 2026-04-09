@@ -4,7 +4,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
-import org.remus.giteabot.config.BotConfigProperties;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.gitea.GiteaApiClient;
 import org.remus.giteabot.gitea.model.GiteaReview;
@@ -12,13 +11,15 @@ import org.remus.giteabot.gitea.model.GiteaReviewComment;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.remus.giteabot.session.ReviewSession;
 import org.remus.giteabot.session.SessionService;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+/**
+ * Core code-review business logic.  Not a Spring-managed singleton — instances
+ * are created per-bot by {@link org.remus.giteabot.admin.BotWebhookService}
+ * with the bot's own {@link AiClient} and {@link GiteaApiClient}.
+ */
 @Slf4j
-@Service
 public class CodeReviewService {
 
     static final int MAX_DIFF_CHARS_FOR_CONTEXT = 60000;
@@ -27,19 +28,18 @@ public class CodeReviewService {
     private final AiClient aiClient;
     private final PromptService promptService;
     private final SessionService sessionService;
-    private final BotConfigProperties botConfig;
+    private final String botUsername;
 
     public CodeReviewService(GiteaApiClient giteaApiClient, AiClient aiClient,
                              PromptService promptService, SessionService sessionService,
-                             BotConfigProperties botConfig) {
+                             String botUsername) {
         this.giteaApiClient = giteaApiClient;
         this.aiClient = aiClient;
         this.promptService = promptService;
         this.sessionService = sessionService;
-        this.botConfig = botConfig;
+        this.botUsername = botUsername;
     }
 
-    @Async
     public void reviewPullRequest(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -94,7 +94,6 @@ public class CodeReviewService {
         }
     }
 
-    @Async
     public void handleBotCommand(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -164,7 +163,6 @@ public class CodeReviewService {
         return prContext;
     }
 
-    @Async
     public void handleInlineComment(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -262,7 +260,6 @@ public class CodeReviewService {
      * The individual comments are NOT in the webhook payload, so we fetch them
      * from the Gitea API, filter for bot mentions, and respond to each.
      */
-    @Async
     public void handleReviewSubmitted(WebhookPayload payload, String promptName) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -299,8 +296,7 @@ public class CodeReviewService {
                     owner, repo, prNumber, latestReview.getId(), giteaToken);
 
             // Filter for comments that mention the bot, excluding the bot's own comments
-            String botAlias = botConfig.getAlias();
-            String botUsername = botConfig.getUsername();
+            String botAlias = (botUsername != null && !botUsername.isBlank()) ? "@" + botUsername : "";
             List<GiteaReviewComment> botMentionComments = comments.stream()
                     .filter(c -> c.getBody() != null && c.getBody().contains(botAlias))
                     .filter(c -> !isBotComment(c, botUsername))
