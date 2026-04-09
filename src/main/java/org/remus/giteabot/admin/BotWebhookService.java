@@ -274,10 +274,15 @@ public class BotWebhookService {
     }
 
     /**
-     * Returns the bot alias used for @-mention detection.
+     * Returns the bot alias used for @-mention detection,
+     * or an empty string if the bot has no username configured.
      */
     public String getBotAlias(Bot bot) {
-        return "@" + bot.getUsername();
+        String username = bot.getUsername();
+        if (username == null || username.isBlank()) {
+            return "";
+        }
+        return "@" + username;
     }
 
     private GiteaApiClient createGiteaClient(Bot bot) {

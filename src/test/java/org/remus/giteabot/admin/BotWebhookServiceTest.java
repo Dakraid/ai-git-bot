@@ -79,6 +79,12 @@ class BotWebhookServiceTest {
         assertEquals("@ai_bot", botWebhookService.getBotAlias(bot));
     }
 
+    @Test
+    void getBotAlias_nullUsername_returnsEmpty() {
+        Bot bot = createBot("test-bot", null);
+        assertEquals("", botWebhookService.getBotAlias(bot));
+    }
+
     private Bot createBot(String name, String username) {
         Bot bot = new Bot();
         bot.setName(name);
