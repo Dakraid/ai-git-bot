@@ -13,10 +13,8 @@ import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.PromptService;
-import org.remus.giteabot.gitea.GiteaApiClient;
+import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.gitea.model.WebhookPayload;
-import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Service;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
@@ -29,8 +27,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+/**
+ * Core issue-implementation (agent) business logic.  Not a Spring-managed
+ * singleton — instances are created per-bot by
+ * {@link org.remus.giteabot.admin.BotWebhookService} with the bot's own
+ * {@link AiClient} and {@link RepositoryApiClient}.
+ */
 @Slf4j
-@Service
 public class IssueImplementationService {
 
     private static final String AGENT_PROMPT_NAME = "agent";
@@ -40,7 +43,7 @@ public class IssueImplementationService {
     private static final int MAX_FILE_CONTENT_CHARS = 100000;  // Increased for more context
     private static final int MAX_TREE_FILES_FOR_CONTEXT = 500; // Show more files in tree
 
-    private final GiteaApiClient giteaApiClient;
+    private final RepositoryApiClient repositoryClient;
     private final AiClient aiClient;
     private final PromptService promptService;
     private final AgentConfigProperties agentConfig;
@@ -49,12 +52,12 @@ public class IssueImplementationService {
     private final DiffApplyService diffApplyService;
     private final ObjectMapper objectMapper;
 
-    public IssueImplementationService(GiteaApiClient giteaApiClient,
+    public IssueImplementationService(RepositoryApiClient repositoryClient,
                                       AiClient aiClient, PromptService promptService,
                                       AgentConfigProperties agentConfig, AgentSessionService sessionService,
                                       ToolExecutionService toolExecutionService,
                                       DiffApplyService diffApplyService) {
-        this.giteaApiClient = giteaApiClient;
+        this.repositoryClient = repositoryClient;
         this.aiClient = aiClient;
         this.promptService = promptService;
         this.agentConfig = agentConfig;
@@ -64,7 +67,6 @@ public class IssueImplementationService {
         this.objectMapper = new ObjectMapper();
     }
 
-    @Async
     public void handleIssueAssigned(WebhookPayload payload) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -72,7 +74,7 @@ public class IssueImplementationService {
         Long issueNumber = payload.getIssue().getNumber();
         String issueTitle = payload.getIssue().getTitle();
         String issueBody = payload.getIssue().getBody();
-        String issueRef = payload.getIssue().getRef();
+        String issueRef = normalizeBranchRef(payload.getIssue().getRef());
 
         log.info("Starting implementation for issue #{} '{}' in {}", issueNumber, issueTitle, repoFullName);
 
@@ -89,9 +91,8 @@ public class IssueImplementationService {
         String branchName = null;
         try {
             // Post initial progress comment
-            giteaApiClient.postComment(owner, repo, issueNumber,
-                    "🤖 **AI Agent**: I've been assigned to this issue. Analyzing repository structure...",
-                    null);
+            repositoryClient.postComment(owner, repo, issueNumber,
+                    "🤖 **AI Agent**: I've been assigned to this issue. Analyzing repository structure...");
 
             // Determine base branch: use issue ref if set, otherwise default branch
             String baseBranch;
@@ -99,12 +100,12 @@ public class IssueImplementationService {
                 baseBranch = issueRef;
                 log.info("Using issue branch '{}' as base for issue #{}", baseBranch, issueNumber);
             } else {
-                baseBranch = giteaApiClient.getDefaultBranch(owner, repo, null);
+                baseBranch = repositoryClient.getDefaultBranch(owner, repo);
                 log.info("No issue branch set, using default branch '{}' for issue #{}", baseBranch, issueNumber);
             }
 
             // Fetch repository tree
-            List<Map<String, Object>> tree = giteaApiClient.getRepositoryTree(owner, repo, baseBranch, null);
+            List<Map<String, Object>> tree = repositoryClient.getRepositoryTree(owner, repo, baseBranch);
             String treeContext = buildTreeContext(tree);
 
             // Get system prompt for agent
@@ -136,22 +137,20 @@ public class IssueImplementationService {
 
             if (plan == null || plan.getFileChanges() == null || plan.getFileChanges().isEmpty()) {
                 sessionService.setStatus(session, AgentSession.AgentSessionStatus.FAILED);
-                giteaApiClient.postComment(owner, repo, issueNumber,
+                repositoryClient.postComment(owner, repo, issueNumber,
                         "🤖 **AI Agent**: I was unable to generate a valid implementation plan for this issue. " +
                         "The issue may be too complex or ambiguous for automated implementation.\n\n" +
-                        "You can mention me in a comment to provide more details or clarification.",
-                        null);
+                        "You can mention me in a comment to provide more details or clarification.");
                 return;
             }
 
             // Enforce max files limit
             if (plan.getFileChanges().size() > agentConfig.getMaxFiles()) {
                 sessionService.setStatus(session, AgentSession.AgentSessionStatus.FAILED);
-                giteaApiClient.postComment(owner, repo, issueNumber,
+                repositoryClient.postComment(owner, repo, issueNumber,
                         String.format("🤖 **AI Agent**: The generated plan requires %d file changes, " +
                                 "but the maximum allowed is %d. Please break this issue into smaller tasks.",
-                                plan.getFileChanges().size(), agentConfig.getMaxFiles()),
-                        null);
+                                plan.getFileChanges().size(), agentConfig.getMaxFiles()));
                 return;
             }
 
@@ -160,7 +159,7 @@ public class IssueImplementationService {
             sessionService.setBranchName(session, branchName);
 
             // Create feature branch from base branch
-            giteaApiClient.createBranch(owner, repo, branchName, baseBranch, null);
+            repositoryClient.createBranch(owner, repo, branchName, baseBranch);
             log.info("Created branch '{}' from '{}' for issue #{}", branchName, baseBranch, issueNumber);
 
             // Commit file changes and track them in the session
@@ -177,8 +176,8 @@ public class IssueImplementationService {
             // Create pull request targeting the base branch
             String prTitle = String.format("AI Agent: %s (fixes #%d)", issueTitle, issueNumber);
             String prBody = buildPrBody(issueNumber, plan);
-            Long prNumber = giteaApiClient.createPullRequest(owner, repo, prTitle, prBody,
-                    branchName, baseBranch, null);
+            Long prNumber = repositoryClient.createPullRequest(owner, repo, prTitle, prBody,
+                    branchName, baseBranch);
 
             // Update session with PR number
             sessionService.setPrNumber(session, prNumber);
@@ -195,7 +194,7 @@ public class IssueImplementationService {
                             .map(fc -> String.format("- `%s` (%s)", fc.getPath(), fc.getOperation()))
                             .collect(Collectors.joining("\n")));
 
-            giteaApiClient.postComment(owner, repo, issueNumber, successComment, null);
+            repositoryClient.postComment(owner, repo, issueNumber, successComment);
             log.info("Successfully created PR #{} for issue #{} in {}", prNumber, issueNumber, repoFullName);
 
         } catch (Exception e) {
@@ -206,7 +205,7 @@ public class IssueImplementationService {
             // Clean up branch on failure
             if (branchName != null) {
                 try {
-                    giteaApiClient.deleteBranch(owner, repo, branchName, null);
+                    repositoryClient.deleteBranch(owner, repo, branchName);
                 } catch (Exception deleteError) {
                     log.warn("Failed to clean up branch '{}': {}", branchName, deleteError.getMessage());
                 }
@@ -214,12 +213,11 @@ public class IssueImplementationService {
 
             // Post failure comment
             try {
-                giteaApiClient.postComment(owner, repo, issueNumber,
+                repositoryClient.postComment(owner, repo, issueNumber,
                         String.format("🤖 **AI Agent**: Implementation failed with error: `%s`\n\n" +
                                 "The created branch has been cleaned up. You can mention me in a comment " +
                                 "to try again with more details.",
-                                e.getMessage()),
-                        null);
+                                e.getMessage()));
             } catch (Exception commentError) {
                 log.error("Failed to post failure comment on issue #{}: {}", issueNumber, commentError.getMessage());
             }
@@ -319,12 +317,12 @@ public class IssueImplementationService {
 
                     // Prepare workspace if not already done
                     if (workspaceDir == null) {
-                        ToolExecutionService.WorkspaceResult workspaceResult = toolExecutionService.prepareWorkspace(owner, repo, defaultBranch, plan.getFileChanges());
+                        ToolExecutionService.WorkspaceResult workspaceResult = toolExecutionService.prepareWorkspace(owner, repo, defaultBranch, plan.getFileChanges(), repositoryClient.getBaseUrl(), repositoryClient.getToken());
                         if (!workspaceResult.success()) {
                             log.error("Failed to prepare workspace for validation: {}", workspaceResult.error());
                             // Post error as comment so it's visible
-                            giteaApiClient.postComment(owner, repo, issueNumber,
-                                    "⚠️ **Workspace preparation failed**\n\n" + workspaceResult.error(), null);
+                            repositoryClient.postComment(owner, repo, issueNumber,
+                                    "⚠️ **Workspace preparation failed**\n\n" + workspaceResult.error());
                             return plan; // Return plan without validation
                         }
                         workspaceDir = workspaceResult.workspacePath();
@@ -473,7 +471,7 @@ public class IssueImplementationService {
                 }
             }
 
-            giteaApiClient.postComment(owner, repo, issueNumber, comment.toString(), null);
+            repositoryClient.postComment(owner, repo, issueNumber, comment.toString());
         } catch (Exception e) {
             log.warn("Failed to post tool result comment: {}", e.getMessage());
         }
@@ -584,11 +582,11 @@ public class IssueImplementationService {
                 // Prepare workspace if not already done
                 if (workspaceDir == null) {
                     ToolExecutionService.WorkspaceResult workspaceResult =
-                            toolExecutionService.prepareWorkspace(owner, repo, workingBranch, currentPlan.getFileChanges());
+                            toolExecutionService.prepareWorkspace(owner, repo, workingBranch, currentPlan.getFileChanges(), repositoryClient.getBaseUrl(), repositoryClient.getToken());
                     if (!workspaceResult.success()) {
                         log.error("Failed to prepare workspace for validation: {}", workspaceResult.error());
-                        giteaApiClient.postComment(owner, repo, issueNumber,
-                                "⚠️ **Workspace preparation failed**\n\n" + workspaceResult.error(), null);
+                        repositoryClient.postComment(owner, repo, issueNumber,
+                                "⚠️ **Workspace preparation failed**\n\n" + workspaceResult.error());
                         return currentPlan; // Return plan without validation
                     }
                     workspaceDir = workspaceResult.workspacePath();
@@ -674,7 +672,6 @@ public class IssueImplementationService {
      * Handles a comment on an issue that mentions the bot.
      * This allows users to request changes or continue work after initial implementation.
      */
-    @Async
     public void handleIssueComment(WebhookPayload payload) {
         String owner = payload.getRepository().getOwner().getLogin();
         String repo = payload.getRepository().getName();
@@ -697,7 +694,7 @@ public class IssueImplementationService {
         try {
             // Add reaction to acknowledge
             try {
-                giteaApiClient.addReaction(owner, repo, commentId, "eyes", null);
+                repositoryClient.addReaction(owner, repo, commentId, "eyes");
             } catch (Exception e) {
                 log.warn("Failed to add reaction to comment #{}: {}", commentId, e.getMessage());
             }
@@ -707,7 +704,7 @@ public class IssueImplementationService {
 
             // Get current branch and default branch
             String branchName = session.getBranchName();
-            String defaultBranch = giteaApiClient.getDefaultBranch(owner, repo, null);
+            String defaultBranch = repositoryClient.getDefaultBranch(owner, repo);
             String workingBranch = branchName != null ? branchName : defaultBranch;
 
             // Build user message - AI already has context from conversation history
@@ -770,10 +767,9 @@ public class IssueImplementationService {
                 if (plan == null || !plan.hasFileChanges()) {
                     // Validation failed and couldn't be fixed
                     sessionService.setStatus(session, AgentSession.AgentSessionStatus.PR_CREATED);
-                    giteaApiClient.postComment(owner, repo, issueNumber,
+                    repositoryClient.postComment(owner, repo, issueNumber,
                             "🤖 **AI Agent**: Validation failed and I couldn't fix the issues. " +
-                            "Please check the tool output above and provide more guidance.",
-                            null);
+                            "Please check the tool output above and provide more guidance.");
                     return;
                 }
             }
@@ -782,7 +778,7 @@ public class IssueImplementationService {
             if (branchName == null) {
                 // Create a new branch if we don't have one
                 branchName = agentConfig.getBranchPrefix() + "issue-" + issueNumber;
-                giteaApiClient.createBranch(owner, repo, branchName, defaultBranch, null);
+                repositoryClient.createBranch(owner, repo, branchName, defaultBranch);
                 sessionService.setBranchName(session, branchName);
             }
 
@@ -800,8 +796,8 @@ public class IssueImplementationService {
             if (session.getPrNumber() == null) {
                 String prTitle = String.format("AI Agent: %s (fixes #%d)", session.getIssueTitle(), issueNumber);
                 String prBody = buildPrBody(issueNumber, plan);
-                Long prNumber = giteaApiClient.createPullRequest(owner, repo, prTitle, prBody,
-                        branchName, defaultBranch, null);
+                Long prNumber = repositoryClient.createPullRequest(owner, repo, prTitle, prBody,
+                        branchName, defaultBranch);
                 sessionService.setPrNumber(session, prNumber);
             }
 
@@ -820,18 +816,17 @@ public class IssueImplementationService {
                             .collect(Collectors.joining("\n")),
                     session.getPrNumber());
 
-            giteaApiClient.postComment(owner, repo, issueNumber, updateComment, null);
+            repositoryClient.postComment(owner, repo, issueNumber, updateComment);
             log.info("Successfully applied follow-up changes for issue #{}", issueNumber);
 
         } catch (Exception e) {
             log.error("Failed to handle comment on issue #{}: {}", issueNumber, e.getMessage(), e);
 
             try {
-                giteaApiClient.postComment(owner, repo, issueNumber,
+                repositoryClient.postComment(owner, repo, issueNumber,
                         String.format("🤖 **AI Agent**: Failed to process your request: `%s`\n\n" +
                                 "Please try again or provide more details.",
-                                e.getMessage()),
-                        null);
+                                e.getMessage()));
             } catch (Exception commentError) {
                 log.error("Failed to post error comment on issue #{}: {}", issueNumber, commentError.getMessage());
             }
@@ -930,7 +925,7 @@ public class IssueImplementationService {
                 break;
             }
             try {
-                String content = giteaApiClient.getFileContent(owner, repo, path, ref, null);
+                String content = repositoryClient.getFileContent(owner, repo, path, ref);
                 if (content != null && !content.isEmpty()) {
                     sb.append("\n--- File: ").append(path).append(" ---\n");
                     sb.append(content).append("\n");
@@ -969,16 +964,16 @@ public class IssueImplementationService {
                                            FileChange change, String commitMessage,
                                            AgentSession session, AiClient aiClient, String systemPrompt) {
         switch (change.getOperation()) {
-            case CREATE -> giteaApiClient.createOrUpdateFile(owner, repo, change.getPath(),
-                    change.getContent(), commitMessage, branchName, null, null);
+            case CREATE -> repositoryClient.createOrUpdateFile(owner, repo, change.getPath(),
+                    change.getContent(), commitMessage, branchName, null);
             case UPDATE -> {
-                String sha = giteaApiClient.getFileSha(owner, repo, change.getPath(), branchName, null);
+                String sha = repositoryClient.getFileSha(owner, repo, change.getPath(), branchName);
                 String newContent;
 
                 if (change.isDiffBased()) {
                     // Apply diff to existing content
-                    String originalContent = giteaApiClient.getFileContent(owner, repo,
-                            change.getPath(), branchName, null);
+                    String originalContent = repositoryClient.getFileContent(owner, repo,
+                            change.getPath(), branchName);
                     try {
                         newContent = diffApplyService.applyDiff(originalContent, change.getDiff());
                     } catch (DiffApplyService.DiffApplyException e) {
@@ -1009,13 +1004,13 @@ public class IssueImplementationService {
                     newContent = change.getContent();
                 }
 
-                giteaApiClient.createOrUpdateFile(owner, repo, change.getPath(),
-                        newContent, commitMessage, branchName, sha, null);
+                repositoryClient.createOrUpdateFile(owner, repo, change.getPath(),
+                        newContent, commitMessage, branchName, sha);
             }
             case DELETE -> {
-                String sha = giteaApiClient.getFileSha(owner, repo, change.getPath(), branchName, null);
-                giteaApiClient.deleteFile(owner, repo, change.getPath(),
-                        commitMessage, branchName, sha, null);
+                String sha = repositoryClient.getFileSha(owner, repo, change.getPath(), branchName);
+                repositoryClient.deleteFile(owner, repo, change.getPath(),
+                        commitMessage, branchName, sha);
             }
         }
     }
@@ -1196,7 +1191,7 @@ public class IssueImplementationService {
         }
 
         try {
-            giteaApiClient.postComment(owner, repo, issueNumber, commentText, null);
+            repositoryClient.postComment(owner, repo, issueNumber, commentText);
         } catch (Exception e) {
             log.warn("Failed to post AI thinking comment on issue #{}: {}", issueNumber, e.getMessage());
         }
@@ -1325,7 +1320,7 @@ public class IssueImplementationService {
                 break;
             }
             try {
-                String content = giteaApiClient.getFileContent(owner, repo, path, ref, null);
+                String content = repositoryClient.getFileContent(owner, repo, path, ref);
                 if (content != null && !content.isEmpty()) {
                     sb.append("\n--- File: ").append(path).append(" ---\n");
                     sb.append(content).append("\n");
@@ -1579,6 +1574,29 @@ public class IssueImplementationService {
         sb.append("\n---\n");
         sb.append("*This PR was automatically generated by the AI implementation agent. Please review carefully before merging.*\n");
         return sb.toString();
+    }
+
+    /**
+     * Normalizes a branch reference by removing the "refs/heads/" prefix if present.
+     * Gitea returns branch refs in issues as "refs/heads/main" but the API and git
+     * commands expect just "main".
+     *
+     * @param ref The branch reference (e.g., "refs/heads/main" or "main")
+     * @return The normalized branch name (e.g., "main"), or null if input is null
+     */
+    private String normalizeBranchRef(String ref) {
+        if (ref == null || ref.isBlank()) {
+            return null;
+        }
+        // Remove "refs/heads/" prefix if present
+        if (ref.startsWith("refs/heads/")) {
+            return ref.substring("refs/heads/".length());
+        }
+        // Remove "refs/tags/" prefix if present (for tag refs)
+        if (ref.startsWith("refs/tags/")) {
+            return ref.substring("refs/tags/".length());
+        }
+        return ref;
     }
 
     @Data

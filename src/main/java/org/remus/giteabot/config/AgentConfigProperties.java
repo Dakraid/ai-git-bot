@@ -14,7 +14,7 @@ public class AgentConfigProperties {
     /**
      * Whether the issue implementation agent feature is enabled.
      */
-    private boolean enabled = false;
+    private boolean enabled = true;
 
     /**
      * Maximum number of files the agent can modify in a single implementation.

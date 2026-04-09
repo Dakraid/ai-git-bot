@@ -48,12 +48,12 @@ sequenceDiagram
 
 ## Setup
 
-### 1. Enable the Agent
+### 1. Agent is Enabled by Default
 
-Set the following environment variable (or application property):
+The agent is **enabled by default**. If you need to disable it, set the following environment variable (or application property):
 
 ```bash
-export AGENT_ENABLED=true
+export AGENT_ENABLED=false
 ```
 
 ### 2. Configure Gitea Webhooks
@@ -76,7 +76,7 @@ Ensure the bot user has at minimum **Write** permission on the target repositori
 
 | Environment Variable | Property | Default | Description |
 |---|---|---|---|
-| `AGENT_ENABLED` | `agent.enabled` | `false` | Enable/disable the agent feature |
+| `AGENT_ENABLED` | `agent.enabled` | `true` | Enable/disable the agent feature |
 | `AGENT_MAX_FILES` | `agent.max-files` | `20` | Maximum files the agent can modify per issue |
 | `AGENT_MAX_TOKENS` | `agent.max-tokens` | `32768` | Maximum tokens for AI responses |
 | `AGENT_BRANCH_PREFIX` | `agent.branch-prefix` | `ai-agent/` | Prefix for created branches |
@@ -141,14 +141,14 @@ agent:
       - make
 ```
 
-### Syntax Validation (Fallback)
+### Additional Syntax Checks
 
-If the AI doesn't request a tool, or as an additional check, the agent validates generated code syntax before committing:
+In addition to the AI-driven tool validation, the agent includes lightweight syntax checks:
 
 - **Java files**: Uses the Java Compiler API to detect syntax errors (missing semicolons, unclosed braces, etc.)
 - **JSON/YAML files**: Parses files to validate syntax
 
-If validation fails, the agent automatically sends the errors back to the AI for correction. This "iterative refinement" loop continues up to `max-retries` times.
+These checks run alongside the tool validation and provide quick feedback for common errors.
 
 
 ## Token Optimization
@@ -194,9 +194,9 @@ services:
       AI_PROVIDER: anthropic
       AI_ANTHROPIC_API_KEY: your-api-key
       BOT_USERNAME: ai_bot
-      AGENT_ENABLED: "true"
       AGENT_MAX_FILES: "10"
       AGENT_BRANCH_PREFIX: "ai-agent/"
+      # AGENT_ENABLED: "false"  # Uncomment to disable the agent
       # AGENT_ALLOWED_REPOS: "myorg/repo1,myorg/repo2"
 ```
 
@@ -207,15 +207,77 @@ services:
 3. **File limit**: The `agent.max-files` setting prevents the agent from making overly large changes.
 4. **Prompt injection protection**: The agent prompt includes guardrails against prompt injection from issue descriptions.
 5. **Branch cleanup**: If the agent fails during implementation, it cleans up the created branch automatically.
-6. **Feature toggle**: The agent is disabled by default (`agent.enabled=false`). It must be explicitly enabled.
+6. **Feature toggle**: The agent is enabled by default (`agent.enabled=true`). Set `AGENT_ENABLED=false` to disable it if needed.
 
 ## Limitations
 
 1. **Context window limits**: Large repositories may exceed the AI provider's context window. The agent limits the number of files sent as context and truncates content when necessary.
 2. **Complex multi-file changes**: The agent works best for focused, well-described issues. Very complex issues requiring changes across many files may produce incomplete or incorrect implementations.
-3. **Syntax validation only**: By default, the agent validates Java, JSON, and YAML syntax but does not compile or run the full project. Enable `build-enabled` for full compilation checks.
-4. **Iterative refinement**: The agent can auto-correct syntax errors through iterative AI feedback. After `max-retries` attempts, it will still create the PR with a warning comment if errors persist.
-5. **No dependency management**: The agent cannot add new project dependencies (e.g., Maven/Gradle dependencies).
+3. **Iterative refinement**: The agent can auto-correct errors through iterative AI feedback using the validation tools. After `max-retries` attempts, it will still create the PR with a warning comment if errors persist.
+4. **No dependency management**: The agent cannot add new project dependencies (e.g., Maven/Gradle dependencies).
+5. **Ollama/Local LLM support**: The agent requires models that can reliably follow structured JSON output formats. Most local LLMs (via Ollama) are **not recommended** for the agent feature — they often fail to produce valid JSON responses. Use Anthropic Claude or OpenAI GPT-4 for best results. See [Ollama Limitations](#ollama-limitations) below.
+
+## Ollama Limitations
+
+⚠️ **The agent feature has limited support with Ollama and other local LLMs.**
+
+The agent requires the AI to respond with a specific JSON format containing file changes and tool requests.
+
+### Automatic JSON Mode
+
+The bot **automatically enables Ollama's JSON mode** when the agent is used. This forces the model to output valid JSON and significantly improves reliability. You can verify this in the logs:
+
+```
+INFO: Ollama chat request: JSON mode enabled for structured output
+```
+
+However, even with JSON mode enabled, local models may:
+
+- Produce incomplete or malformed JSON for complex requests
+- Struggle with multi-file implementations
+- Return simpler JSON structures than expected
+
+**Symptoms of issues (less common now with JSON mode):**
+```
+ERROR: Failed to parse AI response as JSON: Unexpected character ('@' (code 64))
+```
+
+**Recommendations:**
+
+| Use Case | Recommended Provider |
+|----------|---------------------|
+| **Agent (issue implementation)** | Anthropic Claude or OpenAI GPT-4 (most reliable) |
+| **Agent with local LLM** | Ollama with 32B+ parameter models |
+| **Code reviews (PR comments)** | Any provider, including small Ollama models |
+
+### Using Larger Models with Ollama
+
+Larger models (32B+ parameters) have significantly better instruction-following capabilities and **may work** with the agent:
+
+| Model | Agent Compatibility | RAM Required |
+|-------|---------------------|--------------|
+| `qwen2.5-coder:32b` | ✅ Best chance | ~24 GB+ |
+| `deepseek-coder:33b` | ✅ Best chance | ~24 GB+ |
+| `codellama:70b` | ✅ Best chance | ~48 GB+ |
+| `deepseek-coder-v2:16b` | ⚠️ May work | ~12 GB+ |
+
+**Important:** Even these larger models may occasionally fail. For reliable production use, cloud-based providers (Anthropic, OpenAI) are recommended.
+
+To try the agent with a larger Ollama model:
+
+```bash
+ollama pull qwen2.5-coder:32b
+
+export AI_PROVIDER=ollama
+export AI_MODEL=qwen2.5-coder:32b
+export AGENT_ENABLED=true
+```
+
+To **disable the agent** when using smaller Ollama models (recommended):
+
+```bash
+export AGENT_ENABLED=false
+```
 
 ## Error Handling
 

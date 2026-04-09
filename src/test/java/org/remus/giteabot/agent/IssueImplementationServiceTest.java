@@ -12,7 +12,7 @@ import org.remus.giteabot.agent.validation.ToolExecutionService;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.remus.giteabot.config.PromptService;
-import org.remus.giteabot.gitea.GiteaApiClient;
+import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 
 import java.util.List;
@@ -26,7 +26,7 @@ import static org.mockito.Mockito.*;
 class IssueImplementationServiceTest {
 
     @Mock
-    private GiteaApiClient giteaApiClient;
+    private RepositoryApiClient repositoryClient;
 
     @Mock
     private AiClient aiClient;
@@ -53,7 +53,7 @@ class IssueImplementationServiceTest {
         agentConfig.setEnabled(true);
         agentConfig.setMaxFiles(10);
         agentConfig.setBranchPrefix("ai-agent/");
-        service = new IssueImplementationService(giteaApiClient, aiClient, promptService, agentConfig,
+        service = new IssueImplementationService(repositoryClient, aiClient, promptService, agentConfig,
                 sessionService, toolExecutionService, diffApplyService);
     }
 
@@ -345,8 +345,8 @@ class IssueImplementationServiceTest {
     void handleIssueAssigned_successfulFlow() {
         WebhookPayload payload = createIssuePayload();
 
-        when(giteaApiClient.getDefaultBranch("testowner", "testrepo", null)).thenReturn("main");
-        when(giteaApiClient.getRepositoryTree("testowner", "testrepo", "main", null))
+        when(repositoryClient.getDefaultBranch("testowner", "testrepo")).thenReturn("main");
+        when(repositoryClient.getRepositoryTree("testowner", "testrepo", "main"))
                 .thenReturn(List.of(Map.of("type", "blob", "path", "README.md")));
         when(promptService.getSystemPrompt("agent")).thenReturn("You are an agent");
 
@@ -365,18 +365,18 @@ class IssueImplementationServiceTest {
                 ```
                 """;
         when(aiClient.chat(anyList(), anyString(), anyString(), isNull(), anyInt())).thenReturn(aiResponse);
-        when(giteaApiClient.createPullRequest(eq("testowner"), eq("testrepo"), anyString(), anyString(),
-                eq("ai-agent/issue-42"), eq("main"), isNull())).thenReturn(1L);
+        when(repositoryClient.createPullRequest(eq("testowner"), eq("testrepo"), anyString(), anyString(),
+                eq("ai-agent/issue-42"), eq("main"))).thenReturn(1L);
 
         service.handleIssueAssigned(payload);
 
-        verify(giteaApiClient).createBranch("testowner", "testrepo", "ai-agent/issue-42", "main", null);
-        verify(giteaApiClient).createOrUpdateFile(eq("testowner"), eq("testrepo"), eq("src/Feature.java"),
-                eq("public class Feature {}"), anyString(), eq("ai-agent/issue-42"), isNull(), isNull());
-        verify(giteaApiClient).createPullRequest(eq("testowner"), eq("testrepo"), anyString(), anyString(),
-                eq("ai-agent/issue-42"), eq("main"), isNull());
+        verify(repositoryClient).createBranch("testowner", "testrepo", "ai-agent/issue-42", "main");
+        verify(repositoryClient).createOrUpdateFile(eq("testowner"), eq("testrepo"), eq("src/Feature.java"),
+                eq("public class Feature {}"), anyString(), eq("ai-agent/issue-42"), isNull());
+        verify(repositoryClient).createPullRequest(eq("testowner"), eq("testrepo"), anyString(), anyString(),
+                eq("ai-agent/issue-42"), eq("main"));
         // Should post at least 2 comments: initial progress + success
-        verify(giteaApiClient, atLeast(2)).postComment(eq("testowner"), eq("testrepo"), eq(42L), anyString(), isNull());
+        verify(repositoryClient, atLeast(2)).postComment(eq("testowner"), eq("testrepo"), eq(42L), anyString());
     }
 
     @Test
@@ -384,8 +384,8 @@ class IssueImplementationServiceTest {
         agentConfig.setMaxFiles(1);
         WebhookPayload payload = createIssuePayload();
 
-        when(giteaApiClient.getDefaultBranch("testowner", "testrepo", null)).thenReturn("main");
-        when(giteaApiClient.getRepositoryTree("testowner", "testrepo", "main", null)).thenReturn(List.of());
+        when(repositoryClient.getDefaultBranch("testowner", "testrepo")).thenReturn("main");
+        when(repositoryClient.getRepositoryTree("testowner", "testrepo", "main")).thenReturn(List.of());
         when(promptService.getSystemPrompt("agent")).thenReturn("You are an agent");
 
         String aiResponse = """
@@ -404,36 +404,36 @@ class IssueImplementationServiceTest {
         service.handleIssueAssigned(payload);
 
         // Should not create branch or PR
-        verify(giteaApiClient, never()).createBranch(any(), any(), any(), any(), any());
-        verify(giteaApiClient, never()).createPullRequest(any(), any(), any(), any(), any(), any(), any());
+        verify(repositoryClient, never()).createBranch(any(), any(), any(), any());
+        verify(repositoryClient, never()).createPullRequest(any(), any(), any(), any(), any(), any());
         // Should post warning about max files
-        verify(giteaApiClient, atLeast(1)).postComment(eq("testowner"), eq("testrepo"), eq(42L),
-                contains("maximum allowed"), isNull());
+        verify(repositoryClient, atLeast(1)).postComment(eq("testowner"), eq("testrepo"), eq(42L),
+                contains("maximum allowed"));
     }
 
     @Test
     void handleIssueAssigned_aiReturnsInvalid_postsFailure() {
         WebhookPayload payload = createIssuePayload();
 
-        when(giteaApiClient.getDefaultBranch("testowner", "testrepo", null)).thenReturn("main");
-        when(giteaApiClient.getRepositoryTree("testowner", "testrepo", "main", null)).thenReturn(List.of());
+        when(repositoryClient.getDefaultBranch("testowner", "testrepo")).thenReturn("main");
+        when(repositoryClient.getRepositoryTree("testowner", "testrepo", "main")).thenReturn(List.of());
         when(promptService.getSystemPrompt("agent")).thenReturn("You are an agent");
         when(aiClient.chat(anyList(), anyString(), anyString(), isNull(), anyInt())).thenReturn("I don't know how to do this");
 
         service.handleIssueAssigned(payload);
 
-        verify(giteaApiClient, never()).createBranch(any(), any(), any(), any(), any());
+        verify(repositoryClient, never()).createBranch(any(), any(), any(), any());
         // Should post a comment about inability to generate a plan
-        verify(giteaApiClient, atLeast(1)).postComment(eq("testowner"), eq("testrepo"), eq(42L),
-                contains("unable to generate"), isNull());
+        verify(repositoryClient, atLeast(1)).postComment(eq("testowner"), eq("testrepo"), eq(42L),
+                contains("unable to generate"));
     }
 
     @Test
     void handleIssueAssigned_apiError_cleansUpBranch() {
         WebhookPayload payload = createIssuePayload();
 
-        when(giteaApiClient.getDefaultBranch("testowner", "testrepo", null)).thenReturn("main");
-        when(giteaApiClient.getRepositoryTree("testowner", "testrepo", "main", null)).thenReturn(List.of());
+        when(repositoryClient.getDefaultBranch("testowner", "testrepo")).thenReturn("main");
+        when(repositoryClient.getRepositoryTree("testowner", "testrepo", "main")).thenReturn(List.of());
         when(promptService.getSystemPrompt("agent")).thenReturn("You are an agent");
 
         String aiResponse = """
@@ -447,17 +447,17 @@ class IssueImplementationServiceTest {
                 ```
                 """;
         when(aiClient.chat(anyList(), anyString(), anyString(), isNull(), anyInt())).thenReturn(aiResponse);
-        doNothing().when(giteaApiClient).createBranch(any(), any(), any(), any(), any());
-        doThrow(new RuntimeException("API error")).when(giteaApiClient)
-                .createOrUpdateFile(any(), any(), any(), any(), any(), any(), any(), any());
+        doNothing().when(repositoryClient).createBranch(any(), any(), any(), any());
+        doThrow(new RuntimeException("API error")).when(repositoryClient)
+                .createOrUpdateFile(any(), any(), any(), any(), any(), any(), any());
 
         service.handleIssueAssigned(payload);
 
         // Branch should be cleaned up
-        verify(giteaApiClient).deleteBranch("testowner", "testrepo", "ai-agent/issue-42", null);
+        verify(repositoryClient).deleteBranch("testowner", "testrepo", "ai-agent/issue-42");
         // Should post failure comment
-        verify(giteaApiClient, atLeast(1)).postComment(eq("testowner"), eq("testrepo"), eq(42L),
-                contains("failed"), isNull());
+        verify(repositoryClient, atLeast(1)).postComment(eq("testowner"), eq("testrepo"), eq(42L),
+                contains("failed"));
     }
 
     @Test
@@ -469,9 +469,9 @@ class IssueImplementationServiceTest {
                 Map.of("type", "blob", "path", "src/Other.java")
         );
 
-        when(giteaApiClient.getFileContent("o", "r", "pom.xml", "main", null)).thenReturn("<pom/>");
-        when(giteaApiClient.getFileContent("o", "r", "README.md", "main", null)).thenReturn("# Readme");
-        when(giteaApiClient.getFileContent("o", "r", "src/Main.java", "main", null)).thenReturn("class Main {}");
+        when(repositoryClient.getFileContent("o", "r", "pom.xml", "main")).thenReturn("<pom/>");
+        when(repositoryClient.getFileContent("o", "r", "README.md", "main")).thenReturn("# Readme");
+        when(repositoryClient.getFileContent("o", "r", "src/Main.java", "main")).thenReturn("class Main {}");
 
         String result = service.fetchRelevantFileContents("o", "r", "main", tree,
                 "Fix src/Main.java", "Update the main class");
