@@ -7,23 +7,29 @@ This document describes the high-level architecture of the AI Gitea Bot, includi
 ```mermaid
 graph LR
     Gitea["Gitea Instance"]
+    GitHub["GitHub"]
     Bot["AI Gitea Bot"]
     AI["AI Provider<br/>(Anthropic / OpenAI / Ollama / llama.cpp)"]
     DB["PostgreSQL Database"]
 
     Gitea -- "Webhook (PR/Comment/Review event)" --> Bot
+    GitHub -- "Webhook (PR/Comment/Review event)" --> Bot
     Bot -- "Fetch PR diff" --> Gitea
     Bot -- "Post review/comment" --> Gitea
     Bot -- "Fetch reviews & comments" --> Gitea
     Bot -- "Add reaction" --> Gitea
+    Bot -- "Fetch PR diff" --> GitHub
+    Bot -- "Post review/comment" --> GitHub
+    Bot -- "Fetch reviews & comments" --> GitHub
+    Bot -- "Add reaction" --> GitHub
     Bot -- "Review diff / Chat" --> AI
     AI -- "Review text" --> Bot
     Bot -- "Persist/Load session" --> DB
 ```
 
-The bot sits between a Gitea instance and a configurable AI provider. When a pull request is opened or updated, Gitea sends a webhook to the bot. The bot fetches the diff, sends it to the configured AI provider for review, and posts the review back as a PR comment. Conversation sessions are persisted in a database so the bot maintains context across PR updates and comment interactions.
+The bot sits between a Git hosting platform (Gitea or GitHub) and a configurable AI provider. When a pull request is opened or updated, the platform sends a webhook to the bot. The bot fetches the diff, sends it to the configured AI provider for review, and posts the review back as a PR comment. Conversation sessions are persisted in a database so the bot maintains context across PR updates and comment interactions.
 
-The bot also responds to inline review comments and submitted reviews containing bot mentions by fetching the relevant review data from the Gitea API and posting context-aware replies.
+The bot also responds to inline review comments and submitted reviews containing bot mentions by fetching the relevant review data from the Git platform API and posting context-aware replies.
 
 ## Component Diagram
 
@@ -195,11 +201,29 @@ public AiClient llamaCppClient(AiConfigProperties config) { ... }
 ### GiteaApiClient
 
 - **Package:** `org.remus.giteabot.gitea`
+- Gitea-specific implementation of `RepositoryApiClient`
 - Fetches PR diffs from the Gitea API
 - Posts review comments, regular comments, and inline review comments back to PRs
 - Fetches reviews and review comments for a PR (used when processing submitted reviews)
 - Adds emoji reactions to comments (e.g., 👀 for acknowledgment)
 - Supports per-request token overrides with cached `RestClient` instances
+
+### GitHubApiClient
+
+- **Package:** `org.remus.giteabot.github`
+- GitHub-specific implementation of `RepositoryApiClient`
+- Uses the GitHub REST API v3 (`https://api.github.com` or GitHub Enterprise)
+- Authenticates with `Authorization: Bearer <token>`
+- Maps all repository operations (PR diffs, reviews, comments, branches, files) to GitHub API endpoints
+
+### GitHubWebhookController
+
+- **Package:** `org.remus.giteabot.github`
+- **Endpoint:** `POST /api/github-webhook/{webhookSecret}`
+- Receives GitHub webhook payloads and translates them to the common `WebhookPayload` model
+- Routes events by `X-GitHub-Event` header: `pull_request`, `issue_comment`, `pull_request_review`, `pull_request_review_comment`, `issues`
+- Maps GitHub action names to Gitea-compatible names (e.g., `synchronize` → `synchronized`, `submitted` → `reviewed`)
+- Delegates to `BotWebhookService` for actual processing, same as the Gitea webhook controller
 
 ### WebhookPayload Model
 
