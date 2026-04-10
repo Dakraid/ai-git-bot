@@ -87,10 +87,25 @@ class BitbucketProviderMetadataTest {
     }
 
     @Test
-    void buildAuthorizationHeader_usesBearer() {
-        String header = metadata.buildAuthorizationHeader("bb_token123");
+    void buildAuthorizationHeader_apiToken_usesBearer() {
+        String header = metadata.buildAuthorizationHeader("ATATT3xFfGF0CNndTrZZuJdJfXcmNmuF2RQK9fTUUTRhThM");
 
-        assertThat(header).isEqualTo("Bearer bb_token123");
+        assertThat(header).startsWith("Bearer ATATT");
+    }
+
+    @Test
+    void buildAuthorizationHeader_appPassword_usesBasicAuth() {
+        String header = metadata.buildAuthorizationHeader("username:app_password");
+
+        // Base64 of "username:app_password" is "dXNlcm5hbWU6YXBwX3Bhc3N3b3Jk"
+        assertThat(header).isEqualTo("Basic dXNlcm5hbWU6YXBwX3Bhc3N3b3Jk");
+    }
+
+    @Test
+    void buildAuthorizationHeader_unknownFormat_usesBearer() {
+        String header = metadata.buildAuthorizationHeader("someOtherToken123");
+
+        assertThat(header).isEqualTo("Bearer someOtherToken123");
     }
 
     @Test

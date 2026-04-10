@@ -2,95 +2,77 @@ package org.remus.giteabot.bitbucket;
 
 import lombok.extern.slf4j.Slf4j;
 import org.remus.giteabot.admin.Bot;
-import org.remus.giteabot.admin.BotService;
 import org.remus.giteabot.admin.BotWebhookService;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.stereotype.Component;
 
-import java.util.List;
 import java.util.Map;
 
 /**
- * Webhook controller for Bitbucket Cloud events.
+ * Handler for Bitbucket Cloud webhook events.
  * <p>
  * Receives Bitbucket Cloud webhook payloads and translates them into the common
  * {@link WebhookPayload} model used by the rest of the application, then
  * delegates to {@link BotWebhookService} for actual processing.
  * <p>
  * Bitbucket Cloud event types are delivered via the {@code X-Event-Key} header.
- * Supported events: pullrequest:created, pullrequest:updated,
- * pullrequest:fulfilled, pullrequest:rejected, pullrequest:comment_created.
+ * Supported events: pullrequest:created, pullrequest:open, pullrequest:updated,
+ * pullrequest:fulfilled, pullrequest:rejected, pullrequest:merged,
+ * pullrequest:declined, pullrequest:comment_created.
  */
 @Slf4j
-@RestController
-@RequestMapping("/api/bitbucket-webhook")
-public class BitbucketWebhookController {
+@Component
+public class BitbucketWebhookHandler {
 
-    private final BotService botService;
     private final BotWebhookService botWebhookService;
 
-    public BitbucketWebhookController(BotService botService,
-                                      BotWebhookService botWebhookService) {
-        this.botService = botService;
+    public BitbucketWebhookHandler(BotWebhookService botWebhookService) {
         this.botWebhookService = botWebhookService;
     }
 
     /**
-     * Per-bot Bitbucket webhook endpoint. Routes by webhook secret like the Gitea/GitHub controllers.
-     * Bitbucket event type is determined from the {@code X-Event-Key} header.
+     * Handles a Bitbucket webhook event for the given bot.
+     *
+     * @param bot      the bot to process the webhook for
+     * @param eventKey the Bitbucket event key from X-Event-Key header
+     * @param payload  the raw webhook payload
+     * @return response indicating the result of webhook processing
      */
-    @PostMapping("/{webhookSecret}")
-    public ResponseEntity<String> handleBitbucketWebhook(
-            @PathVariable String webhookSecret,
-            @RequestHeader(value = "X-Event-Key", required = false) String eventKey,
-            @RequestBody Map<String, Object> payload) {
-        return botService.findByWebhookSecret(webhookSecret)
-                .map(bot -> {
-                    if (!bot.isEnabled()) {
-                        log.debug("Bot '{}' is disabled, ignoring Bitbucket webhook", bot.getName());
-                        return ResponseEntity.ok("bot disabled");
-                    }
-                    botService.incrementWebhookCallCount(bot);
-                    log.info("Bitbucket webhook received for bot '{}' (event={}, git={})",
-                            bot.getName(), eventKey, bot.getGitIntegration().getName());
-                    return handleEvent(bot, eventKey, payload);
-                })
-                .orElseGet(() -> {
-                    log.warn("No bot found for webhook secret: {}...",
-                            webhookSecret.substring(0, Math.min(8, webhookSecret.length())));
-                    return ResponseEntity.notFound().build();
-                });
-    }
-
-    private ResponseEntity<String> handleEvent(Bot bot, String eventKey, Map<String, Object> raw) {
+    public ResponseEntity<String> handleWebhook(Bot bot, String eventKey, Map<String, Object> payload) {
         if (eventKey == null) {
-            log.warn("Missing X-Event-Key header");
+            log.warn("Missing X-Event-Key header for Bitbucket webhook");
             return ResponseEntity.ok("ignored");
         }
 
-        WebhookPayload payload = translatePayload(eventKey, raw);
-        if (payload == null) {
+        log.debug("Processing Bitbucket event: {} for bot '{}'", eventKey, bot.getName());
+
+        WebhookPayload webhookPayload = translatePayload(eventKey, payload);
+        if (webhookPayload == null) {
+            log.warn("Could not translate Bitbucket payload for event key: {}", eventKey);
             return ResponseEntity.ok("ignored");
         }
 
         // Ignore events triggered by the bot itself
-        if (botWebhookService.isBotUser(bot, payload)) {
-            log.debug("Ignoring Bitbucket webhook event from bot's own user '{}'", bot.getUsername());
+        if (botWebhookService.isBotUser(bot, webhookPayload)) {
+            String senderLogin = webhookPayload.getSender() != null ? webhookPayload.getSender().getLogin() : "null";
+            log.info("Ignoring Bitbucket webhook event from bot's own user. Bot username='{}', sender='{}'",
+                    bot.getUsername(), senderLogin);
             return ResponseEntity.ok("ignored");
         }
 
         String botAlias = botWebhookService.getBotAlias(bot);
+        log.debug("Event passed all checks, processing {} with botAlias='{}'", eventKey, botAlias);
 
         return switch (eventKey) {
-            case "pullrequest:created", "pullrequest:updated" ->
-                    handlePullRequestOpenedOrUpdated(bot, payload);
-            case "pullrequest:fulfilled", "pullrequest:rejected" ->
-                    handlePullRequestClosed(bot, payload);
+            case "pullrequest:created", "pullrequest:updated", "pullrequest:open" ->
+                    handlePullRequestOpenedOrUpdated(bot, webhookPayload);
+            case "pullrequest:fulfilled", "pullrequest:rejected", "pullrequest:merged", "pullrequest:declined" ->
+                    handlePullRequestClosed(bot, webhookPayload);
             case "pullrequest:comment_created" ->
-                    handlePullRequestComment(bot, payload, botAlias);
+                    handlePullRequestComment(bot, webhookPayload, botAlias);
             default -> {
-                log.debug("Unhandled Bitbucket event key: {}", eventKey);
+                log.warn("Unhandled Bitbucket event key: {}", eventKey);
                 yield ResponseEntity.ok("ignored");
             }
         };
@@ -126,17 +108,13 @@ public class BitbucketWebhookController {
 
     // ---- Bitbucket → WebhookPayload translation ----
 
-    /**
-     * Translates a raw Bitbucket Cloud webhook JSON payload into the common {@link WebhookPayload} model.
-     * Returns {@code null} if the event key is unsupported.
-     */
     @SuppressWarnings("unchecked")
     WebhookPayload translatePayload(String eventKey, Map<String, Object> raw) {
         return switch (eventKey) {
-            case "pullrequest:created" -> translatePullRequestEvent(raw, "opened");
+            case "pullrequest:created", "pullrequest:open" -> translatePullRequestEvent(raw, "opened");
             case "pullrequest:updated" -> translatePullRequestEvent(raw, "synchronized");
-            case "pullrequest:fulfilled" -> translatePullRequestEvent(raw, "closed");
-            case "pullrequest:rejected" -> translatePullRequestEvent(raw, "closed");
+            case "pullrequest:fulfilled", "pullrequest:merged" -> translatePullRequestEvent(raw, "closed");
+            case "pullrequest:rejected", "pullrequest:declined" -> translatePullRequestEvent(raw, "closed");
             case "pullrequest:comment_created" -> translatePullRequestCommentEvent(raw);
             default -> null;
         };
@@ -168,7 +146,6 @@ public class BitbucketWebhookController {
 
         if (payload.getPullRequest() != null) {
             payload.setNumber(payload.getPullRequest().getNumber());
-            // Build a synthetic issue for consistency with the Gitea webhook model
             WebhookPayload.Issue issue = new WebhookPayload.Issue();
             issue.setNumber(payload.getPullRequest().getNumber());
             issue.setTitle(payload.getPullRequest().getTitle());
@@ -186,7 +163,6 @@ public class BitbucketWebhookController {
         Map<String, Object> actor = (Map<String, Object>) raw.get("actor");
         if (actor == null) return null;
         WebhookPayload.Owner owner = new WebhookPayload.Owner();
-        // Bitbucket Cloud uses "nickname" or "display_name" for user identification
         String nickname = (String) actor.get("nickname");
         owner.setLogin(nickname != null ? nickname : (String) actor.get("display_name"));
         return owner;
@@ -200,21 +176,20 @@ public class BitbucketWebhookController {
         repository.setName((String) repo.get("name"));
         repository.setFullName((String) repo.get("full_name"));
 
-        // Extract UUID as ID if available
         String uuid = (String) repo.get("uuid");
         if (uuid != null) {
             repository.setId((long) uuid.hashCode());
         }
 
-        // Extract workspace owner
         Map<String, Object> ownerMap = (Map<String, Object>) repo.get("owner");
         if (ownerMap != null) {
             WebhookPayload.Owner owner = new WebhookPayload.Owner();
             String nickname = (String) ownerMap.get("nickname");
-            owner.setLogin(nickname != null ? nickname : (String) ownerMap.get("display_name"));
+            String username = (String) ownerMap.get("username");
+            String displayName = (String) ownerMap.get("display_name");
+            owner.setLogin(nickname != null ? nickname : (username != null ? username : displayName));
             repository.setOwner(owner);
         } else {
-            // Fallback: extract workspace from full_name
             String fullName = (String) repo.get("full_name");
             if (fullName != null && fullName.contains("/")) {
                 WebhookPayload.Owner owner = new WebhookPayload.Owner();
@@ -231,12 +206,11 @@ public class BitbucketWebhookController {
         if (pr == null) return null;
         WebhookPayload.PullRequest pullRequest = new WebhookPayload.PullRequest();
         pullRequest.setId(toLong(pr.get("id")));
-        pullRequest.setNumber(toLong(pr.get("id"))); // Bitbucket uses "id" as PR number
+        pullRequest.setNumber(toLong(pr.get("id")));
         pullRequest.setTitle((String) pr.get("title"));
         pullRequest.setBody((String) pr.get("description"));
         pullRequest.setState((String) pr.get("state"));
 
-        // Head (source branch)
         Map<String, Object> source = (Map<String, Object>) pr.get("source");
         if (source != null) {
             WebhookPayload.Head head = new WebhookPayload.Head();
@@ -251,7 +225,6 @@ public class BitbucketWebhookController {
             pullRequest.setHead(head);
         }
 
-        // Base (destination branch)
         Map<String, Object> destination = (Map<String, Object>) pr.get("destination");
         if (destination != null) {
             WebhookPayload.Head base = new WebhookPayload.Head();
@@ -266,7 +239,6 @@ public class BitbucketWebhookController {
             pullRequest.setBase(base);
         }
 
-        // Merged state
         pullRequest.setMerged("MERGED".equals(pr.get("state")));
 
         return pullRequest;
@@ -278,13 +250,11 @@ public class BitbucketWebhookController {
         WebhookPayload.Comment c = new WebhookPayload.Comment();
         c.setId(toLong(comment.get("id")));
 
-        // Bitbucket wraps comment body in "content" -> "raw"
         Map<String, Object> content = (Map<String, Object>) comment.get("content");
         if (content != null) {
             c.setBody((String) content.get("raw"));
         }
 
-        // User
         Map<String, Object> user = (Map<String, Object>) comment.get("user");
         if (user != null) {
             WebhookPayload.Owner u = new WebhookPayload.Owner();
@@ -293,7 +263,6 @@ public class BitbucketWebhookController {
             c.setUser(u);
         }
 
-        // Inline comment fields (path, line)
         Map<String, Object> inline = (Map<String, Object>) comment.get("inline");
         if (inline != null) {
             c.setPath((String) inline.get("path"));
@@ -310,3 +279,4 @@ public class BitbucketWebhookController {
         return null;
     }
 }
+

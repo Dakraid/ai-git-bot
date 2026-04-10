@@ -2,6 +2,7 @@ package org.remus.giteabot.bitbucket;
 
 import org.junit.jupiter.api.Test;
 import org.remus.giteabot.gitea.model.WebhookPayload;
+import tools.jackson.databind.ObjectMapper;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -10,17 +11,17 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Unit tests for the Bitbucket Cloud → WebhookPayload translation logic in
- * {@link BitbucketWebhookController#translatePayload(String, Map)}.
+ * {@link BitbucketWebhookHandler#translatePayload(String, Map)}.
  */
 class BitbucketPayloadTranslationTest {
 
-    private final BitbucketWebhookController controller = new BitbucketWebhookController(null, null);
+    private final BitbucketWebhookHandler handler = new BitbucketWebhookHandler(null);
 
     @Test
     void translatePullRequestCreated_mapsAllFields() {
         Map<String, Object> raw = createPullRequestPayload();
 
-        WebhookPayload payload = controller.translatePayload("pullrequest:created", raw);
+        WebhookPayload payload = handler.translatePayload("pullrequest:created", raw);
 
         assertNotNull(payload);
         assertEquals("opened", payload.getAction());
@@ -39,7 +40,7 @@ class BitbucketPayloadTranslationTest {
     void translatePullRequestUpdated_mapsToSynchronized() {
         Map<String, Object> raw = createPullRequestPayload();
 
-        WebhookPayload payload = controller.translatePayload("pullrequest:updated", raw);
+        WebhookPayload payload = handler.translatePayload("pullrequest:updated", raw);
 
         assertNotNull(payload);
         assertEquals("synchronized", payload.getAction());
@@ -54,7 +55,7 @@ class BitbucketPayloadTranslationTest {
         Map<String, Object> rawCopy = new HashMap<>(raw);
         rawCopy.put("pullrequest", pr);
 
-        WebhookPayload payload = controller.translatePayload("pullrequest:fulfilled", rawCopy);
+        WebhookPayload payload = handler.translatePayload("pullrequest:fulfilled", rawCopy);
 
         assertNotNull(payload);
         assertEquals("closed", payload.getAction());
@@ -65,7 +66,7 @@ class BitbucketPayloadTranslationTest {
     void translatePullRequestRejected_mapsToClosed() {
         Map<String, Object> raw = createPullRequestPayload();
 
-        WebhookPayload payload = controller.translatePayload("pullrequest:rejected", raw);
+        WebhookPayload payload = handler.translatePayload("pullrequest:rejected", raw);
 
         assertNotNull(payload);
         assertEquals("closed", payload.getAction());
@@ -75,7 +76,7 @@ class BitbucketPayloadTranslationTest {
     void translatePullRequestCommentCreated_mapsComment() {
         Map<String, Object> raw = createCommentPayload("@ai_bot review this", null);
 
-        WebhookPayload payload = controller.translatePayload("pullrequest:comment_created", raw);
+        WebhookPayload payload = handler.translatePayload("pullrequest:comment_created", raw);
 
         assertNotNull(payload);
         assertEquals("created", payload.getAction());
@@ -95,7 +96,7 @@ class BitbucketPayloadTranslationTest {
         );
         Map<String, Object> raw = createCommentPayload("@ai_bot explain this", inline);
 
-        WebhookPayload payload = controller.translatePayload("pullrequest:comment_created", raw);
+        WebhookPayload payload = handler.translatePayload("pullrequest:comment_created", raw);
 
         assertNotNull(payload);
         assertNotNull(payload.getComment());
@@ -105,17 +106,88 @@ class BitbucketPayloadTranslationTest {
 
     @Test
     void translateUnknownEvent_returnsNull() {
-        assertNull(controller.translatePayload("repo:push", Map.of()));
+        assertNull(handler.translatePayload("repo:push", Map.of()));
     }
 
     @Test
     void translatePullRequestCreated_extractsActorNickname() {
         Map<String, Object> raw = createPullRequestPayload();
 
-        WebhookPayload payload = controller.translatePayload("pullrequest:created", raw);
+        WebhookPayload payload = handler.translatePayload("pullrequest:created", raw);
 
         assertNotNull(payload);
         assertEquals("developer", payload.getSender().getLogin());
+    }
+
+    @Test
+    void translateRealBitbucketPayload_mapsAllFields() throws Exception {
+        // Real Bitbucket Cloud payload from a pullrequest:created event
+        String json = """
+            {
+              "repository": {
+                "type": "repository",
+                "full_name": "my-cool-java-project/test-project",
+                "name": "test-project",
+                "uuid": "{b1233004-7268-4fb3-bc7e-0eec6de885ce}",
+                "owner": {
+                  "display_name": "my-cool-java-project",
+                  "type": "team",
+                  "uuid": "{9bbec7f6-1eee-4df9-a439-398066182a71}",
+                  "username": "my-cool-java-project"
+                }
+              },
+              "actor": {
+                "display_name": "Tom Seidel",
+                "type": "user",
+                "uuid": "{3c780092-38a5-4801-adb7-0789d2697f64}",
+                "account_id": "5aec2ce958742e214dd095ef",
+                "nickname": "tmseidel"
+              },
+              "pullrequest": {
+                "id": 16,
+                "title": "README.md edited online with Bitbucket",
+                "description": "",
+                "state": "OPEN",
+                "source": {
+                  "branch": { "name": "Test-branch" },
+                  "commit": { "hash": "4401032e1b70" }
+                },
+                "destination": {
+                  "branch": { "name": "main" },
+                  "commit": { "hash": "1c7868ba0d14" }
+                }
+              }
+            }
+            """;
+
+        ObjectMapper mapper = new ObjectMapper();
+        @SuppressWarnings("unchecked")
+        Map<String, Object> raw = mapper.readValue(json, Map.class);
+
+        WebhookPayload payload = handler.translatePayload("pullrequest:created", raw);
+
+        assertNotNull(payload);
+        assertEquals("opened", payload.getAction());
+
+        // Actor/sender
+        assertNotNull(payload.getSender());
+        assertEquals("tmseidel", payload.getSender().getLogin());
+
+        // Repository
+        assertNotNull(payload.getRepository());
+        assertEquals("test-project", payload.getRepository().getName());
+        assertEquals("my-cool-java-project/test-project", payload.getRepository().getFullName());
+        assertNotNull(payload.getRepository().getOwner());
+        assertEquals("my-cool-java-project", payload.getRepository().getOwner().getLogin());
+
+        // Pull request
+        assertNotNull(payload.getPullRequest());
+        assertEquals(16L, payload.getPullRequest().getNumber());
+        assertEquals("README.md edited online with Bitbucket", payload.getPullRequest().getTitle());
+        assertEquals("Test-branch", payload.getPullRequest().getHead().getRef());
+        assertEquals("main", payload.getPullRequest().getBase().getRef());
+        assertEquals("4401032e1b70", payload.getPullRequest().getHead().getSha());
+        assertEquals("1c7868ba0d14", payload.getPullRequest().getBase().getSha());
     }
 
     // ---- Helper methods ----

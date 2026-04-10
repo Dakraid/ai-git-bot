@@ -7,8 +7,10 @@ import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.repository.model.Review;
 import org.remus.giteabot.repository.model.ReviewComment;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
@@ -62,12 +64,52 @@ public class BitbucketApiClient implements RepositoryApiClient {
     @Override
     public String getPullRequestDiff(String owner, String repo, Long pullNumber) {
         log.info("Fetching diff for PR #{} in {}/{} from baseUrl={}", pullNumber, owner, repo, baseUrl);
-        return restClient.get()
-                .uri("/repositories/{workspace}/{repo}/pullrequests/{pr_id}/diff",
-                        owner, repo, pullNumber)
-                .header("Accept", "text/plain")
-                .retrieve()
-                .body(String.class);
+        try {
+            // Bitbucket Cloud diff endpoint returns a 302 redirect to the actual diff content.
+            // We need an HttpClient that follows redirects and accepts text/plain.
+            HttpClient httpClient = HttpClient.newBuilder()
+                    .followRedirects(HttpClient.Redirect.NORMAL)
+                    .build();
+
+            String authHeader = buildAuthorizationHeader();
+            String diff = RestClient.builder()
+                    .baseUrl(baseUrl)
+                    .requestFactory(new JdkClientHttpRequestFactory(httpClient))
+                    .defaultHeader("Authorization", authHeader)
+                    .build()
+                    .get()
+                    .uri("/repositories/{workspace}/{repo}/pullrequests/{pr_id}/diff",
+                            owner, repo, pullNumber)
+                    .header("Accept", "text/plain")
+                    .retrieve()
+                    .body(String.class);
+            log.debug("Diff response length: {}", diff != null ? diff.length() : 0);
+            return diff;
+        } catch (Exception e) {
+            log.error("Failed to fetch diff for PR #{} in {}/{}: {}", pullNumber, owner, repo, e.getMessage(), e);
+            return null;
+        }
+    }
+
+    /**
+     * Build the Authorization header based on the token format.
+     * - ATATT... tokens: Bearer authentication
+     * - username:password format: Basic authentication
+     * - Other tokens: Bearer authentication
+     */
+    private String buildAuthorizationHeader() {
+        if (token == null || token.isBlank()) {
+            return "";
+        }
+        if (token.startsWith("ATATT")) {
+            return "Bearer " + token;
+        }
+        if (token.contains(":")) {
+            String encoded = Base64.getEncoder().encodeToString(
+                    token.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return "Basic " + encoded;
+        }
+        return "Bearer " + token;
     }
 
     @Override

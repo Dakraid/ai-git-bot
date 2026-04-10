@@ -6,10 +6,24 @@ import org.remus.giteabot.bitbucket.BitbucketApiClient;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+
 /**
  * Metadata and factory for Bitbucket Cloud repository integration.
  * Handles URL transformations between bitbucket.org and api.bitbucket.org,
  * and creates properly configured Bitbucket API clients.
+ * <p>
+ * Authentication methods supported:
+ * <ul>
+ *   <li><b>API Tokens (new)</b>: Tokens starting with "ATATT" use Bearer authentication.
+ *       Enter just the token in the Token field.</li>
+ *   <li><b>App Passwords (legacy)</b>: For tokens containing ":", use Basic authentication
+ *       with format "username:app_password".</li>
+ * </ul>
+ * <p>
+ * Note: As of September 2025, Bitbucket Cloud has replaced App Passwords with API Tokens.
+ * Existing App Passwords will be disabled on June 9, 2026.
  */
 @Slf4j
 @Component
@@ -75,6 +89,27 @@ public class BitbucketProviderMetadata implements RepositoryProviderMetadata {
 
     @Override
     public String buildAuthorizationHeader(String token) {
+        if (token == null || token.isBlank()) {
+            log.warn("Bitbucket token is empty or null");
+            return "";
+        }
+
+        // New Atlassian API Tokens (ATATT...) use Bearer authentication
+        if (token.startsWith("ATATT")) {
+            log.debug("Using Bearer authentication for Atlassian API Token");
+            return "Bearer " + token;
+        }
+
+        // Legacy App Passwords use Basic authentication with username:password format
+        if (token.contains(":")) {
+            log.debug("Using Basic authentication for App Password (username:password format)");
+            String encoded = Base64.getEncoder().encodeToString(token.getBytes(StandardCharsets.UTF_8));
+            return "Basic " + encoded;
+        }
+
+        // For tokens without ":" that don't start with ATATT, assume Bearer
+        // This handles other OAuth2 access tokens
+        log.debug("Using Bearer authentication (token format not recognized as Basic auth)");
         return "Bearer " + token;
     }
 
