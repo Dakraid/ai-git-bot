@@ -222,7 +222,7 @@ public class BitbucketApiClient implements RepositoryApiClient {
         log.info("Creating/updating file {} on branch '{}' in {}/{}", path, branch, owner, repo);
         // Bitbucket uses the src endpoint with form data for file operations.
         // Use a multipart-like approach with the commit endpoint.
-        String base64Content = Base64.getEncoder().encodeToString(content.getBytes());
+        String base64Content = Base64.getEncoder().encodeToString(content.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         restClient.post()
                 .uri("/repositories/{workspace}/{repo}/src", owner, repo)
                 .header("Content-Type", "application/x-www-form-urlencoded")
