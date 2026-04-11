@@ -10,8 +10,6 @@ import org.remus.giteabot.repository.model.ReviewComment;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.web.client.RestClient;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -42,12 +40,16 @@ public class GitLabApiClient implements RepositoryApiClient {
     }
 
     @Override
+    public String formatPullRequestReference(Long prNumber) {
+        return "!" + prNumber;
+    }
+
+    @Override
     public String getPullRequestDiff(String owner, String repo, Long pullNumber) {
         log.info("Fetching diff for MR !{} in {}/{}", pullNumber, owner, repo);
         String projectPath = encodeProjectPath(owner, repo);
 
         // Fetch the MR to get source and target branch
-        @SuppressWarnings("unchecked")
         Map<String, Object> mr = gitlabRestClient.get()
                 .uri("/api/v4/projects/{projectPath}/merge_requests/{iid}", projectPath, pullNumber)
                 .retrieve()
@@ -60,7 +62,6 @@ public class GitLabApiClient implements RepositoryApiClient {
         String sourceBranch = (String) mr.get("source_branch");
 
         // Get the compare diff between the branches
-        @SuppressWarnings("unchecked")
         Map<String, Object> compare = gitlabRestClient.get()
                 .uri("/api/v4/projects/{projectPath}/repository/compare?from={from}&to={to}",
                         projectPath, targetBranch, sourceBranch)
@@ -115,7 +116,6 @@ public class GitLabApiClient implements RepositoryApiClient {
         String projectPath = encodeProjectPath(owner, repo);
 
         // Fetch the MR to get the diff refs needed for position
-        @SuppressWarnings("unchecked")
         Map<String, Object> mr = gitlabRestClient.get()
                 .uri("/api/v4/projects/{projectPath}/merge_requests/{iid}", projectPath, pullNumber)
                 .retrieve()
@@ -200,7 +200,6 @@ public class GitLabApiClient implements RepositoryApiClient {
     // ---- Repository operations ----
 
     @Override
-    @SuppressWarnings("unchecked")
     public String getDefaultBranch(String owner, String repo) {
         log.info("Fetching default branch for {}/{}", owner, repo);
         String projectPath = encodeProjectPath(owner, repo);
@@ -215,7 +214,6 @@ public class GitLabApiClient implements RepositoryApiClient {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public List<Map<String, Object>> getRepositoryTree(String owner, String repo, String ref) {
         log.info("Fetching repository tree for {}/{} at ref={}", owner, repo, ref);
         String projectPath = encodeProjectPath(owner, repo);
@@ -229,21 +227,18 @@ public class GitLabApiClient implements RepositoryApiClient {
         }
         // Normalize to match the Gitea tree format (path, type fields)
         return tree.stream().map(entry -> {
-            Map<String, Object> normalized = new LinkedHashMap<>(entry);
             // GitLab uses "blob"/"tree", same as Gitea convention
-            return normalized;
+            return (Map<String, Object>) new LinkedHashMap<String, Object>(entry);
         }).collect(Collectors.toList());
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public String getFileContent(String owner, String repo, String path, String ref) {
         log.info("Fetching file content for {}/{}/{} at ref={}", owner, repo, path, ref);
         String projectPath = encodeProjectPath(owner, repo);
-        String encodedPath = URLEncoder.encode(path, StandardCharsets.UTF_8);
         Map<String, Object> result = gitlabRestClient.get()
                 .uri("/api/v4/projects/{projectPath}/repository/files/{filePath}?ref={ref}",
-                        projectPath, encodedPath, ref)
+                        projectPath, path, ref)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
         if (result != null && result.containsKey("content")) {
@@ -254,14 +249,12 @@ public class GitLabApiClient implements RepositoryApiClient {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public String getFileSha(String owner, String repo, String path, String ref) {
         log.info("Fetching file SHA for {}/{}/{} at ref={}", owner, repo, path, ref);
         String projectPath = encodeProjectPath(owner, repo);
-        String encodedPath = URLEncoder.encode(path, StandardCharsets.UTF_8);
         Map<String, Object> result = gitlabRestClient.get()
                 .uri("/api/v4/projects/{projectPath}/repository/files/{filePath}?ref={ref}",
-                        projectPath, encodedPath, ref)
+                        projectPath, path, ref)
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {});
         if (result != null && result.containsKey("blob_id")) {
@@ -287,7 +280,6 @@ public class GitLabApiClient implements RepositoryApiClient {
                                    String message, String branch, String sha) {
         log.info("Creating/updating file {} on branch '{}' in {}/{}", path, branch, owner, repo);
         String projectPath = encodeProjectPath(owner, repo);
-        String encodedPath = URLEncoder.encode(path, StandardCharsets.UTF_8);
         String base64Content = Base64.getEncoder().encodeToString(content.getBytes());
 
         Map<String, Object> body = new LinkedHashMap<>();
@@ -303,7 +295,7 @@ public class GitLabApiClient implements RepositoryApiClient {
             // Update existing file
             gitlabRestClient.put()
                     .uri("/api/v4/projects/{projectPath}/repository/files/{filePath}",
-                            projectPath, encodedPath)
+                            projectPath, path)
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();
@@ -311,7 +303,7 @@ public class GitLabApiClient implements RepositoryApiClient {
             // Create new file
             gitlabRestClient.post()
                     .uri("/api/v4/projects/{projectPath}/repository/files/{filePath}",
-                            projectPath, encodedPath)
+                            projectPath, path)
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();
@@ -324,7 +316,6 @@ public class GitLabApiClient implements RepositoryApiClient {
                            String branch, String sha) {
         log.info("Deleting file {} on branch '{}' in {}/{}", path, branch, owner, repo);
         String projectPath = encodeProjectPath(owner, repo);
-        String encodedPath = URLEncoder.encode(path, StandardCharsets.UTF_8);
 
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("branch", branch);
@@ -335,7 +326,7 @@ public class GitLabApiClient implements RepositoryApiClient {
 
         gitlabRestClient.method(org.springframework.http.HttpMethod.DELETE)
                 .uri("/api/v4/projects/{projectPath}/repository/files/{filePath}",
-                        projectPath, encodedPath)
+                        projectPath, path)
                 .body(body)
                 .retrieve()
                 .toBodilessEntity();
@@ -343,7 +334,6 @@ public class GitLabApiClient implements RepositoryApiClient {
     }
 
     @Override
-    @SuppressWarnings("unchecked")
     public Long createPullRequest(String owner, String repo, String title, String body,
                                   String head, String base) {
         log.info("Creating merge request '{}' in {}/{} from {} to {}", title, owner, repo, head, base);
@@ -388,11 +378,13 @@ public class GitLabApiClient implements RepositoryApiClient {
     // ---- Internal helpers ----
 
     /**
-     * Encodes a project path (owner/repo) for use in GitLab API URLs.
+     * Builds a project path (owner/repo) for use in GitLab API URL templates.
      * GitLab accepts URL-encoded project paths instead of separate owner/repo.
+     * The actual URL-encoding is handled by Spring's RestClient URI template expansion,
+     * so we must NOT pre-encode here to avoid double-encoding.
      */
     static String encodeProjectPath(String owner, String repo) {
-        return URLEncoder.encode(owner + "/" + repo, StandardCharsets.UTF_8);
+        return owner + "/" + repo;
     }
 
     /**

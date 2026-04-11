@@ -49,8 +49,8 @@ class GitLabApiClientTest {
     }
 
     @Test
-    void encodeProjectPath_encodesCorrectly() {
-        assertEquals("owner%2Frepo", GitLabApiClient.encodeProjectPath("owner", "repo"));
-        assertEquals("my-org%2Fmy-project", GitLabApiClient.encodeProjectPath("my-org", "my-project"));
+    void encodeProjectPath_buildsProjectPath() {
+        assertEquals("owner/repo", GitLabApiClient.encodeProjectPath("owner", "repo"));
+        assertEquals("my-org/my-project", GitLabApiClient.encodeProjectPath("my-org", "my-project"));
     }
 }

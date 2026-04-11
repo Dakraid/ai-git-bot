@@ -6,6 +6,7 @@ import org.remus.giteabot.admin.BotWebhookService;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -179,5 +180,99 @@ class GitLabWebhookPayloadTranslationTest {
         assertEquals("Add feature X", result.getIssue().getTitle());
         assertEquals("Please add X", result.getIssue().getBody());
         assertNull(result.getPullRequest());
+    }
+
+    @Test
+    void translateIssuePayload_mapsAllFields_withStringNamespace() {
+        Map<String, Object> attrs = new HashMap<>();
+        attrs.put("iid", 1);
+        attrs.put("title", "Create a Java project");
+        attrs.put("description", "Create a Maven project with a main class");
+
+        // GitLab Issue Hook sends namespace as a plain String
+        Map<String, Object> project = new HashMap<>();
+        project.put("id", 1);
+        project.put("name", "my-cool-project");
+        project.put("path_with_namespace", "java/my-cool-project");
+        project.put("namespace", "java");
+
+        Map<String, Object> gitlabPayload = new HashMap<>();
+        gitlabPayload.put("object_attributes", attrs);
+        gitlabPayload.put("project", project);
+        gitlabPayload.put("user", Map.of("username", "root"));
+        gitlabPayload.put("assignees", List.of(
+                Map.of("id", 2, "username", "ai_bot", "name", "Ai")
+        ));
+
+        WebhookPayload result = handler.translateIssuePayload(gitlabPayload, attrs);
+
+        assertNotNull(result.getIssue());
+        assertEquals(1L, result.getIssue().getNumber());
+        assertEquals("Create a Java project", result.getIssue().getTitle());
+        assertEquals("Create a Maven project with a main class", result.getIssue().getBody());
+        assertNotNull(result.getIssue().getAssignee());
+        assertEquals("ai_bot", result.getIssue().getAssignee().getLogin());
+        assertNotNull(result.getIssue().getAssignees());
+        assertEquals(1, result.getIssue().getAssignees().size());
+        assertEquals("ai_bot", result.getIssue().getAssignees().getFirst().getLogin());
+
+        assertNotNull(result.getRepository());
+        assertEquals("my-cool-project", result.getRepository().getName());
+        assertEquals("java/my-cool-project", result.getRepository().getFullName());
+        assertEquals("java", result.getRepository().getOwner().getLogin());
+
+        assertNotNull(result.getSender());
+        assertEquals("root", result.getSender().getLogin());
+
+        assertNull(result.getPullRequest());
+    }
+
+    @Test
+    void translateIssuePayload_mapsAllFields_withMapNamespace() {
+        Map<String, Object> attrs = new HashMap<>();
+        attrs.put("iid", 1);
+        attrs.put("title", "Create a Java project");
+        attrs.put("description", "Create a Maven project with a main class");
+
+        // Some GitLab versions may send namespace as a Map
+        Map<String, Object> project = new HashMap<>();
+        project.put("id", 1);
+        project.put("name", "my-cool-project");
+        project.put("path_with_namespace", "java/my-cool-project");
+        project.put("namespace", Map.of("path", "java"));
+
+        Map<String, Object> gitlabPayload = new HashMap<>();
+        gitlabPayload.put("object_attributes", attrs);
+        gitlabPayload.put("project", project);
+        gitlabPayload.put("user", Map.of("username", "root"));
+        gitlabPayload.put("assignees", List.of(
+                Map.of("id", 2, "username", "ai_bot", "name", "Ai")
+        ));
+
+        WebhookPayload result = handler.translateIssuePayload(gitlabPayload, attrs);
+
+        assertNotNull(result.getRepository());
+        assertEquals("java", result.getRepository().getOwner().getLogin());
+    }
+
+    @Test
+    void translateIssuePayload_noAssignees_assigneeIsNull() {
+        Map<String, Object> attrs = new HashMap<>();
+        attrs.put("iid", 2);
+        attrs.put("title", "Some issue");
+        attrs.put("description", "Description");
+
+        Map<String, Object> gitlabPayload = new HashMap<>();
+        gitlabPayload.put("object_attributes", attrs);
+        gitlabPayload.put("project", Map.of("id", 1, "name", "repo",
+                "path_with_namespace", "owner/repo",
+                "namespace", Map.of("path", "owner")));
+        gitlabPayload.put("user", Map.of("username", "devuser"));
+
+        WebhookPayload result = handler.translateIssuePayload(gitlabPayload, attrs);
+
+        assertNotNull(result.getIssue());
+        assertEquals(2L, result.getIssue().getNumber());
+        assertNull(result.getIssue().getAssignee());
     }
 }

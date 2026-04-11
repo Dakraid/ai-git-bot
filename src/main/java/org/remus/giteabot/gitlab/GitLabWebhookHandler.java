@@ -7,6 +7,7 @@ import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -18,7 +19,7 @@ import java.util.Map;
  * delegates to {@link BotWebhookService} for actual processing.
  * <p>
  * GitLab event types are delivered via the {@code X-Gitlab-Event} header.
- * Supported events: Merge Request Hook, Note Hook.
+ * Supported events: Merge Request Hook, Note Hook, Issue Hook.
  */
 @Slf4j
 @Component
@@ -49,6 +50,7 @@ public class GitLabWebhookHandler {
         return switch (eventType) {
             case "Merge Request Hook" -> handleMergeRequestEvent(bot, payload);
             case "Note Hook" -> handleNoteEvent(bot, payload);
+            case "Issue Hook" -> handleIssueEvent(bot, payload);
             default -> {
                 log.debug("Unhandled GitLab event type: {}", eventType);
                 yield ResponseEntity.ok("ignored");
@@ -183,6 +185,72 @@ public class GitLabWebhookHandler {
         return ResponseEntity.ok("issue comment received");
     }
 
+    /**
+     * Handles GitLab Issue Hook events.
+     * Detects when the bot is assigned to an issue and triggers the agent.
+     */
+    @SuppressWarnings("unchecked")
+    private ResponseEntity<String> handleIssueEvent(Bot bot, Map<String, Object> payload) {
+        Map<String, Object> attrs = (Map<String, Object>) payload.get("object_attributes");
+        if (attrs == null) {
+            return ResponseEntity.ok("ignored");
+        }
+
+        String gitlabAction = (String) attrs.get("action");
+
+        // We're interested in "update" actions where assignees changed
+        if (!"update".equals(gitlabAction)) {
+            log.debug("Ignoring GitLab issue action: {}", gitlabAction);
+            return ResponseEntity.ok("ignored");
+        }
+
+        // Check if assignees were changed
+        Map<String, Object> changes = (Map<String, Object>) payload.get("changes");
+        if (changes == null || !changes.containsKey("assignees")) {
+            log.debug("No assignee changes in GitLab issue update, ignoring");
+            return ResponseEntity.ok("ignored");
+        }
+
+        // Check if the bot was newly assigned
+        Map<String, Object> assigneeChanges = (Map<String, Object>) changes.get("assignees");
+        List<Map<String, Object>> currentAssignees = assigneeChanges != null
+                ? (List<Map<String, Object>>) assigneeChanges.get("current") : null;
+        List<Map<String, Object>> previousAssignees = assigneeChanges != null
+                ? (List<Map<String, Object>>) assigneeChanges.get("previous") : null;
+
+        if (!isBotNewlyAssigned(bot, currentAssignees, previousAssignees)) {
+            log.debug("Bot '{}' was not newly assigned to the issue, ignoring", bot.getUsername());
+            return ResponseEntity.ok("ignored");
+        }
+
+        WebhookPayload webhookPayload = translateIssuePayload(payload, attrs);
+        webhookPayload.setAction("assigned");
+
+        // Ignore events from the bot itself
+        if (botWebhookService.isBotUser(bot, webhookPayload)) {
+            log.debug("Ignoring GitLab issue event from bot's own user '{}'", bot.getUsername());
+            return ResponseEntity.ok("ignored");
+        }
+
+        botWebhookService.handleIssueAssigned(bot, webhookPayload);
+        return ResponseEntity.ok("agent triggered");
+    }
+
+    /**
+     * Checks whether the bot's username appears in the current assignees but not in the previous ones.
+     */
+    private boolean isBotNewlyAssigned(Bot bot, List<Map<String, Object>> currentAssignees,
+                                        List<Map<String, Object>> previousAssignees) {
+        if (bot.getUsername() == null || currentAssignees == null) {
+            return false;
+        }
+        boolean inCurrent = currentAssignees.stream()
+                .anyMatch(a -> bot.getUsername().equalsIgnoreCase((String) a.get("username")));
+        boolean inPrevious = previousAssignees != null && previousAssignees.stream()
+                .anyMatch(a -> bot.getUsername().equalsIgnoreCase((String) a.get("username")));
+        return inCurrent && !inPrevious;
+    }
+
     // ---- GitLab → WebhookPayload translation ----
 
     /**
@@ -216,6 +284,57 @@ public class GitLabWebhookHandler {
 
         payload.setPullRequest(pr);
         payload.setNumber(pr.getNumber());
+
+        // Repository
+        Map<String, Object> project = (Map<String, Object>) gitlabPayload.get("project");
+        if (project != null) {
+            payload.setRepository(translateRepository(project));
+        }
+
+        // Sender
+        Map<String, Object> user = (Map<String, Object>) gitlabPayload.get("user");
+        if (user != null) {
+            WebhookPayload.Owner sender = new WebhookPayload.Owner();
+            sender.setLogin((String) user.get("username"));
+            payload.setSender(sender);
+        }
+
+        return payload;
+    }
+
+    /**
+     * Translates a GitLab issue webhook payload to the common WebhookPayload format.
+     */
+    @SuppressWarnings("unchecked")
+    WebhookPayload translateIssuePayload(Map<String, Object> gitlabPayload,
+                                         Map<String, Object> attrs) {
+        WebhookPayload payload = new WebhookPayload();
+
+        // Issue
+        WebhookPayload.Issue issue = new WebhookPayload.Issue();
+        issue.setNumber(toLong(attrs.get("iid")));
+        issue.setTitle((String) attrs.get("title"));
+        issue.setBody((String) attrs.get("description"));
+
+        // Set the first assignee (GitLab uses assignee_id in object_attributes)
+        List<Map<String, Object>> assignees = (List<Map<String, Object>>) gitlabPayload.get("assignees");
+        if (assignees != null && !assignees.isEmpty()) {
+            Map<String, Object> firstAssignee = assignees.getFirst();
+            WebhookPayload.Owner assignee = new WebhookPayload.Owner();
+            assignee.setLogin((String) firstAssignee.get("username"));
+            issue.setAssignee(assignee);
+
+            // Map all assignees
+            List<WebhookPayload.Owner> allAssignees = new ArrayList<>();
+            for (Map<String, Object> a : assignees) {
+                WebhookPayload.Owner ao = new WebhookPayload.Owner();
+                ao.setLogin((String) a.get("username"));
+                allAssignees.add(ao);
+            }
+            issue.setAssignees(allAssignees);
+        }
+
+        payload.setIssue(issue);
 
         // Repository
         Map<String, Object> project = (Map<String, Object>) gitlabPayload.get("project");
@@ -317,9 +436,12 @@ public class GitLabWebhookHandler {
         if (pathWithNamespace != null && pathWithNamespace.contains("/")) {
             owner.setLogin(pathWithNamespace.substring(0, pathWithNamespace.lastIndexOf('/')));
         }
-        Map<String, Object> namespace = (Map<String, Object>) project.get("namespace");
-        if (namespace != null) {
-            String path = (String) namespace.get("path");
+        // GitLab sends namespace as a String (e.g. Issue Hook) or as an object with "path" (e.g. MR Hook)
+        Object namespace = project.get("namespace");
+        if (namespace instanceof String ns) {
+            owner.setLogin(ns);
+        } else if (namespace instanceof Map<?, ?> nsMap) {
+            String path = (String) nsMap.get("path");
             if (path != null) {
                 owner.setLogin(path);
             }

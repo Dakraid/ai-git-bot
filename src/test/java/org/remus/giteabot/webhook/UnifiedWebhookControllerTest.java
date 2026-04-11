@@ -144,6 +144,25 @@ class UnifiedWebhookControllerTest {
         verify(bitbucketHandler, never()).handleWebhook(any(), any(), any());
     }
 
+    @Test
+    void handleWebhook_gitlabBot_issueHook_delegatesToGitLabHandler() throws Exception {
+        Bot bot = createTestBot(RepositoryType.GITLAB);
+        when(botService.findByWebhookSecret("test-secret")).thenReturn(Optional.of(bot));
+        when(gitLabHandler.handleWebhook(eq(bot), eq("Issue Hook"), any())).thenReturn(ResponseEntity.ok("agent triggered"));
+
+        mockMvc.perform(post("/api/webhook/test-secret")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-Gitlab-Event", "Issue Hook")
+                        .content("{\"object_kind\":\"issue\",\"object_attributes\":{\"iid\":1,\"action\":\"update\"}}"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("agent triggered"));
+
+        verify(gitLabHandler).handleWebhook(eq(bot), eq("Issue Hook"), any(Map.class));
+        verify(giteaHandler, never()).handleWebhook(any(), any());
+        verify(gitHubHandler, never()).handleWebhook(any(), any(), any());
+        verify(bitbucketHandler, never()).handleWebhook(any(), any(), any());
+    }
+
     private Bot createTestBot(RepositoryType type) {
         Bot bot = new Bot();
         bot.setId(1L);

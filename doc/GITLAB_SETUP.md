@@ -88,8 +88,8 @@ Webhooks tell GitLab to notify the bot when merge request events occur. Each bot
 
 1. In the bot's web UI, go to **Bots**
 2. Click on your bot (or create one if you haven't)
-3. The **Webhook URL** is displayed at the top of the edit form
-4. Copy this URL (e.g., `http://your-bot-server:8080/api/webhook/abc123-def456-...`)
+3. The **Webhook URL** is displayed at the top of the edit form as a path (e.g., `/api/webhook/abc123-def456-...`)
+4. Combine your server's base URL with this path to get the full webhook URL (e.g., `http://your-bot-server:8080/api/webhook/abc123-def456-...`)
 
 ### Project-Level Webhook
 
