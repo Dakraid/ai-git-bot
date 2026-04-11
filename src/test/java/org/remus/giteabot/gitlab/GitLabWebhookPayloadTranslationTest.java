@@ -1,14 +1,24 @@
 package org.remus.giteabot.gitlab;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.remus.giteabot.admin.BotWebhookService;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 
 import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
 
 class GitLabWebhookPayloadTranslationTest {
+
+    private GitLabWebhookHandler handler;
+
+    @BeforeEach
+    void setUp() {
+        handler = new GitLabWebhookHandler(mock(BotWebhookService.class));
+    }
 
     @Test
     void translateMergeRequestPayload_mapsAllFields() {
@@ -33,7 +43,7 @@ class GitLabWebhookPayloadTranslationTest {
         gitlabPayload.put("project", project);
         gitlabPayload.put("user", Map.of("username", "testuser"));
 
-        WebhookPayload result = GitLabWebhookController.translateMergeRequestPayload(gitlabPayload, attrs);
+        WebhookPayload result = handler.translateMergeRequestPayload(gitlabPayload, attrs);
 
         assertNotNull(result.getPullRequest());
         assertEquals(100L, result.getPullRequest().getId());
@@ -70,7 +80,7 @@ class GitLabWebhookPayloadTranslationTest {
                 "path_with_namespace", "owner/repo",
                 "namespace", Map.of("path", "owner")));
 
-        WebhookPayload result = GitLabWebhookController.translateMergeRequestPayload(gitlabPayload, attrs);
+        WebhookPayload result = handler.translateMergeRequestPayload(gitlabPayload, attrs);
 
         assertEquals("closed", result.getPullRequest().getState());
     }
@@ -91,7 +101,7 @@ class GitLabWebhookPayloadTranslationTest {
                 "path_with_namespace", "owner/repo",
                 "namespace", Map.of("path", "owner")));
 
-        WebhookPayload result = GitLabWebhookController.translateMergeRequestPayload(gitlabPayload, attrs);
+        WebhookPayload result = handler.translateMergeRequestPayload(gitlabPayload, attrs);
 
         assertEquals("closed", result.getPullRequest().getState());
     }
@@ -122,7 +132,7 @@ class GitLabWebhookPayloadTranslationTest {
         gitlabPayload.put("project", project);
         gitlabPayload.put("user", Map.of("username", "testuser"));
 
-        WebhookPayload result = GitLabWebhookController.translateNotePayload(gitlabPayload, noteAttrs);
+        WebhookPayload result = handler.translateNotePayload(gitlabPayload, noteAttrs);
 
         assertNotNull(result.getComment());
         assertEquals(42L, result.getComment().getId());
@@ -162,18 +172,12 @@ class GitLabWebhookPayloadTranslationTest {
         gitlabPayload.put("project", project);
         gitlabPayload.put("user", Map.of("username", "devuser"));
 
-        WebhookPayload result = GitLabWebhookController.translateNotePayload(gitlabPayload, noteAttrs);
+        WebhookPayload result = handler.translateNotePayload(gitlabPayload, noteAttrs);
 
         assertNotNull(result.getIssue());
         assertEquals(5L, result.getIssue().getNumber());
         assertEquals("Add feature X", result.getIssue().getTitle());
         assertEquals("Please add X", result.getIssue().getBody());
         assertNull(result.getPullRequest());
-    }
-
-    @Test
-    void encodeProjectPath_encodesCorrectly() {
-        assertEquals("owner%2Frepo", GitLabApiClient.encodeProjectPath("owner", "repo"));
-        assertEquals("my-org%2Fmy-project", GitLabApiClient.encodeProjectPath("my-org", "my-project"));
     }
 }

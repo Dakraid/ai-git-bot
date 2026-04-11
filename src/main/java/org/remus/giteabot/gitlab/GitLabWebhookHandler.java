@@ -2,119 +2,96 @@ package org.remus.giteabot.gitlab;
 
 import lombok.extern.slf4j.Slf4j;
 import org.remus.giteabot.admin.Bot;
-import org.remus.giteabot.admin.BotService;
 import org.remus.giteabot.admin.BotWebhookService;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * Webhook controller for GitLab events.
- * Receives GitLab-formatted webhooks and translates them to the common {@link WebhookPayload}
- * format before routing through {@link BotWebhookService}.
+ * Handler for GitLab webhook events.
  * <p>
- * GitLab webhooks use a different payload structure than Gitea, so this controller handles
- * the translation layer while reusing the same bot routing and business logic.
+ * Receives GitLab webhook payloads and translates them into the common
+ * {@link WebhookPayload} model used by the rest of the application, then
+ * delegates to {@link BotWebhookService} for actual processing.
+ * <p>
+ * GitLab event types are delivered via the {@code X-Gitlab-Event} header.
+ * Supported events: Merge Request Hook, Note Hook.
  */
 @Slf4j
-@RestController
-@RequestMapping("/api/gitlab-webhook")
-public class GitLabWebhookController {
+@Component
+public class GitLabWebhookHandler {
 
-    private final BotService botService;
     private final BotWebhookService botWebhookService;
 
-    public GitLabWebhookController(BotService botService,
-                                   BotWebhookService botWebhookService) {
-        this.botService = botService;
+    public GitLabWebhookHandler(BotWebhookService botWebhookService) {
         this.botWebhookService = botWebhookService;
     }
 
     /**
-     * Per-bot GitLab webhook endpoint. Uses the same bot webhook secret as path parameter.
-     * Translates GitLab events into the common WebhookPayload format.
+     * Handles a GitLab webhook event for the given bot.
+     *
+     * @param bot       the bot to process the webhook for
+     * @param eventType the GitLab event type from X-Gitlab-Event header
+     * @param payload   the raw webhook payload
+     * @return response indicating the result of webhook processing
      */
-    @PostMapping("/{webhookSecret}")
-    public ResponseEntity<String> handleGitLabWebhook(
-            @PathVariable String webhookSecret,
-            @RequestHeader(value = "X-Gitlab-Event", required = false) String gitlabEvent,
-            @RequestBody Map<String, Object> gitlabPayload) {
-
-        return botService.findByWebhookSecret(webhookSecret)
-                .map(bot -> {
-                    if (!bot.isEnabled()) {
-                        log.debug("Bot '{}' is disabled, ignoring GitLab webhook", bot.getName());
-                        return ResponseEntity.ok("bot disabled");
-                    }
-                    botService.incrementWebhookCallCount(bot);
-                    log.info("GitLab webhook received for bot '{}' (event={})",
-                            bot.getName(), gitlabEvent);
-                    return handleGitLabEvent(bot, gitlabEvent, gitlabPayload);
-                })
-                .orElseGet(() -> {
-                    log.warn("No bot found for webhook secret: {}...",
-                            webhookSecret.substring(0, Math.min(8, webhookSecret.length())));
-                    return ResponseEntity.notFound().build();
-                });
-    }
-
-    /**
-     * Routes a GitLab webhook event by translating the payload and delegating to BotWebhookService.
-     */
-    @SuppressWarnings("unchecked")
-    private ResponseEntity<String> handleGitLabEvent(Bot bot, String gitlabEvent,
-                                                      Map<String, Object> gitlabPayload) {
-        if (gitlabEvent == null) {
+    public ResponseEntity<String> handleWebhook(Bot bot, String eventType, Map<String, Object> payload) {
+        if (eventType == null) {
+            log.warn("Missing X-Gitlab-Event header for GitLab webhook");
             return ResponseEntity.ok("ignored");
         }
 
-        return switch (gitlabEvent) {
-            case "Merge Request Hook" -> handleMergeRequestEvent(bot, gitlabPayload);
-            case "Note Hook" -> handleNoteEvent(bot, gitlabPayload);
+        log.debug("Processing GitLab event: {} for bot '{}'", eventType, bot.getName());
+
+        return switch (eventType) {
+            case "Merge Request Hook" -> handleMergeRequestEvent(bot, payload);
+            case "Note Hook" -> handleNoteEvent(bot, payload);
             default -> {
-                log.debug("Ignoring unsupported GitLab event: {}", gitlabEvent);
+                log.debug("Unhandled GitLab event type: {}", eventType);
                 yield ResponseEntity.ok("ignored");
             }
         };
     }
+
+    // ---- Event handlers ----
 
     /**
      * Handles GitLab Merge Request Hook events.
      * Maps to PR opened/synchronized/closed events.
      */
     @SuppressWarnings("unchecked")
-    private ResponseEntity<String> handleMergeRequestEvent(Bot bot, Map<String, Object> gitlabPayload) {
-        Map<String, Object> attrs = (Map<String, Object>) gitlabPayload.get("object_attributes");
+    private ResponseEntity<String> handleMergeRequestEvent(Bot bot, Map<String, Object> payload) {
+        Map<String, Object> attrs = (Map<String, Object>) payload.get("object_attributes");
         if (attrs == null) {
             return ResponseEntity.ok("ignored");
         }
 
         String gitlabAction = (String) attrs.get("action");
-        WebhookPayload payload = translateMergeRequestPayload(gitlabPayload, attrs);
+        WebhookPayload webhookPayload = translateMergeRequestPayload(payload, attrs);
 
         // Ignore events from the bot itself
-        if (botWebhookService.isBotUser(bot, payload)) {
+        if (botWebhookService.isBotUser(bot, webhookPayload)) {
             log.debug("Ignoring GitLab event from bot's own user '{}'", bot.getUsername());
             return ResponseEntity.ok("ignored");
         }
 
         return switch (gitlabAction != null ? gitlabAction : "") {
             case "open" -> {
-                payload.setAction("opened");
-                botWebhookService.reviewPullRequest(bot, payload);
+                webhookPayload.setAction("opened");
+                botWebhookService.reviewPullRequest(bot, webhookPayload);
                 yield ResponseEntity.ok("review triggered");
             }
             case "update" -> {
-                payload.setAction("synchronized");
-                botWebhookService.reviewPullRequest(bot, payload);
+                webhookPayload.setAction("synchronized");
+                botWebhookService.reviewPullRequest(bot, webhookPayload);
                 yield ResponseEntity.ok("review triggered");
             }
             case "close", "merge" -> {
-                payload.setAction("closed");
-                botWebhookService.handlePrClosed(bot, payload);
+                webhookPayload.setAction("closed");
+                botWebhookService.handlePrClosed(bot, webhookPayload);
                 yield ResponseEntity.ok("session closed");
             }
             default -> ResponseEntity.ok("ignored");
@@ -126,8 +103,8 @@ public class GitLabWebhookController {
      * Maps to PR comment or issue comment events.
      */
     @SuppressWarnings("unchecked")
-    private ResponseEntity<String> handleNoteEvent(Bot bot, Map<String, Object> gitlabPayload) {
-        Map<String, Object> attrs = (Map<String, Object>) gitlabPayload.get("object_attributes");
+    private ResponseEntity<String> handleNoteEvent(Bot bot, Map<String, Object> payload) {
+        Map<String, Object> attrs = (Map<String, Object>) payload.get("object_attributes");
         if (attrs == null) {
             return ResponseEntity.ok("ignored");
         }
@@ -141,9 +118,9 @@ public class GitLabWebhookController {
         }
 
         if ("MergeRequest".equals(noteableType)) {
-            return handleMergeRequestNote(bot, gitlabPayload, attrs);
+            return handleMergeRequestNote(bot, payload, attrs);
         } else if ("Issue".equals(noteableType)) {
-            return handleIssueNote(bot, gitlabPayload, attrs);
+            return handleIssueNote(bot, payload, attrs);
         }
 
         return ResponseEntity.ok("ignored");
@@ -153,13 +130,13 @@ public class GitLabWebhookController {
      * Handles a comment on a GitLab merge request.
      */
     @SuppressWarnings("unchecked")
-    private ResponseEntity<String> handleMergeRequestNote(Bot bot, Map<String, Object> gitlabPayload,
+    private ResponseEntity<String> handleMergeRequestNote(Bot bot, Map<String, Object> payload,
                                                            Map<String, Object> noteAttrs) {
-        WebhookPayload payload = translateNotePayload(gitlabPayload, noteAttrs);
-        payload.setAction("created");
+        WebhookPayload webhookPayload = translateNotePayload(payload, noteAttrs);
+        webhookPayload.setAction("created");
 
         // Ignore events from the bot itself
-        if (botWebhookService.isBotUser(bot, payload)) {
+        if (botWebhookService.isBotUser(bot, webhookPayload)) {
             return ResponseEntity.ok("ignored");
         }
 
@@ -168,53 +145,52 @@ public class GitLabWebhookController {
         if (position != null) {
             String path = (String) position.get("new_path");
             if (path != null && !path.isBlank()) {
-                payload.getComment().setPath(path);
+                webhookPayload.getComment().setPath(path);
                 Object newLine = position.get("new_line");
-                if (newLine instanceof Number) {
-                    payload.getComment().setLine(((Number) newLine).intValue());
+                if (newLine instanceof Number n) {
+                    webhookPayload.getComment().setLine(n.intValue());
                 }
-                botWebhookService.handleInlineComment(bot, payload);
+                botWebhookService.handleInlineComment(bot, webhookPayload);
                 return ResponseEntity.ok("inline comment response triggered");
             }
         }
 
         // Mark as a PR comment (set a dummy pull_request on the issue)
-        if (payload.getIssue() != null) {
+        if (webhookPayload.getIssue() != null) {
             WebhookPayload.IssuePullRequest issuePr = new WebhookPayload.IssuePullRequest();
             issuePr.setMerged(false);
-            payload.getIssue().setPullRequest(issuePr);
+            webhookPayload.getIssue().setPullRequest(issuePr);
         }
 
-        botWebhookService.handleBotCommand(bot, payload);
+        botWebhookService.handleBotCommand(bot, webhookPayload);
         return ResponseEntity.ok("command received");
     }
 
     /**
      * Handles a comment on a GitLab issue (non-MR).
      */
-    @SuppressWarnings("unchecked")
-    private ResponseEntity<String> handleIssueNote(Bot bot, Map<String, Object> gitlabPayload,
+    private ResponseEntity<String> handleIssueNote(Bot bot, Map<String, Object> payload,
                                                     Map<String, Object> noteAttrs) {
-        WebhookPayload payload = translateNotePayload(gitlabPayload, noteAttrs);
-        payload.setAction("created");
+        WebhookPayload webhookPayload = translateNotePayload(payload, noteAttrs);
+        webhookPayload.setAction("created");
 
         // Ignore events from the bot itself
-        if (botWebhookService.isBotUser(bot, payload)) {
+        if (botWebhookService.isBotUser(bot, webhookPayload)) {
             return ResponseEntity.ok("ignored");
         }
 
-        botWebhookService.handleIssueComment(bot, payload);
+        botWebhookService.handleIssueComment(bot, webhookPayload);
         return ResponseEntity.ok("issue comment received");
     }
 
-    // ---- Payload translation helpers ----
+    // ---- GitLab → WebhookPayload translation ----
 
     /**
      * Translates a GitLab merge request webhook payload to the common WebhookPayload format.
      */
     @SuppressWarnings("unchecked")
-    static WebhookPayload translateMergeRequestPayload(Map<String, Object> gitlabPayload,
-                                                               Map<String, Object> attrs) {
+    WebhookPayload translateMergeRequestPayload(Map<String, Object> gitlabPayload,
+                                                Map<String, Object> attrs) {
         WebhookPayload payload = new WebhookPayload();
 
         // Pull request
@@ -262,8 +238,8 @@ public class GitLabWebhookController {
      * Translates a GitLab note (comment) webhook payload to the common WebhookPayload format.
      */
     @SuppressWarnings("unchecked")
-    static WebhookPayload translateNotePayload(Map<String, Object> gitlabPayload,
-                                                       Map<String, Object> noteAttrs) {
+    WebhookPayload translateNotePayload(Map<String, Object> gitlabPayload,
+                                        Map<String, Object> noteAttrs) {
         WebhookPayload payload = new WebhookPayload();
 
         // Comment
@@ -327,7 +303,7 @@ public class GitLabWebhookController {
     }
 
     @SuppressWarnings("unchecked")
-    private static WebhookPayload.Repository translateRepository(Map<String, Object> project) {
+    private WebhookPayload.Repository translateRepository(Map<String, Object> project) {
         WebhookPayload.Repository repo = new WebhookPayload.Repository();
         repo.setId(toLong(project.get("id")));
         repo.setName((String) project.get("name"));
@@ -353,7 +329,7 @@ public class GitLabWebhookController {
         return repo;
     }
 
-    private static String mapMrState(String gitlabState) {
+    private String mapMrState(String gitlabState) {
         if (gitlabState == null) return null;
         return switch (gitlabState) {
             case "opened" -> "open";
@@ -363,7 +339,7 @@ public class GitLabWebhookController {
         };
     }
 
-    private static Long toLong(Object value) {
+    private Long toLong(Object value) {
         if (value instanceof Number n) {
             return n.longValue();
         }

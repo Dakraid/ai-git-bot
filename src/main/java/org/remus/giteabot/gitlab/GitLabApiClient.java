@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.remus.giteabot.gitlab.model.GitLabReview;
 import org.remus.giteabot.gitlab.model.GitLabReviewComment;
 import org.remus.giteabot.repository.RepositoryApiClient;
+import org.remus.giteabot.repository.model.RepositoryCredentials;
 import org.remus.giteabot.repository.model.Review;
 import org.remus.giteabot.repository.model.ReviewComment;
 import org.springframework.core.ParameterizedTypeReference;
@@ -22,26 +23,22 @@ import java.util.stream.Collectors;
 public class GitLabApiClient implements RepositoryApiClient {
 
     private final RestClient gitlabRestClient;
-    private final String gitlabUrl;
-    private final String token;
+    private final RepositoryCredentials credentials;
 
     /**
-     * Creates a GitLabApiClient with the given RestClient, GitLab URL, and token.
+     * Creates a GitLabApiClient with the given RestClient and credentials.
+     *
+     * @param restClient  pre-configured RestClient pointing at the GitLab API base URL
+     * @param credentials the repository credentials (base URL, clone URL, token)
      */
-    public GitLabApiClient(RestClient restClient, String gitlabUrl, String token) {
+    public GitLabApiClient(RestClient restClient, RepositoryCredentials credentials) {
         this.gitlabRestClient = restClient;
-        this.gitlabUrl = gitlabUrl;
-        this.token = token;
+        this.credentials = credentials;
     }
 
     @Override
-    public String getBaseUrl() {
-        return gitlabUrl;
-    }
-
-    @Override
-    public String getToken() {
-        return token;
+    public RepositoryCredentials getCredentials() {
+        return credentials;
     }
 
     @Override
