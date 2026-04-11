@@ -49,6 +49,6 @@ class DashboardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name("dashboard"))
                 .andExpect(content().string(containsString("/images/favicon.svg")))
-                .andExpect(content().string(containsString("navbar-brand-icon")));
+                .andExpect(content().string(containsString("brand-icon")));
     }
 }

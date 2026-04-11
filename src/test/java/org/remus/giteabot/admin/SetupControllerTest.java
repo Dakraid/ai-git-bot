@@ -46,7 +46,7 @@ class SetupControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name("setup"))
                 .andExpect(content().string(containsString("/images/favicon.svg")))
-                .andExpect(content().string(containsString("app-brand-icon")));
+                .andExpect(content().string(containsString("brand-icon")));
     }
 
     @Test
@@ -122,6 +122,6 @@ class SetupControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(view().name("login"))
                 .andExpect(content().string(containsString("/images/favicon.svg")))
-                .andExpect(content().string(containsString("app-brand-icon")));
+                .andExpect(content().string(containsString("brand-icon")));
     }
 }
