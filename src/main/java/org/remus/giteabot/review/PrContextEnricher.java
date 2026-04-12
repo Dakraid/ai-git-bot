@@ -243,6 +243,9 @@ public class PrContextEnricher {
      * Matches patterns like "#123", "fixes #123", "closes #456", "resolves #789".
      */
     Set<Long> extractIssueReferences(String text) {
+        if (text == null || text.isBlank()) {
+            return Set.of();
+        }
         Set<Long> issueNumbers = new LinkedHashSet<>();
         Matcher matcher = ISSUE_REF_PATTERN.matcher(text);
         while (matcher.find()) {
