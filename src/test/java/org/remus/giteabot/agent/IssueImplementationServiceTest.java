@@ -10,6 +10,7 @@ import org.remus.giteabot.agent.model.ImplementationPlan;
 import org.remus.giteabot.agent.session.AgentSession;
 import org.remus.giteabot.agent.session.AgentSessionService;
 import org.remus.giteabot.agent.validation.ToolExecutionService;
+import org.remus.giteabot.agent.validation.WorkspaceService;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
 import org.remus.giteabot.config.AgentConfigProperties;
@@ -45,6 +46,9 @@ class IssueImplementationServiceTest {
     private ToolExecutionService toolExecutionService;
 
     @Mock
+    private WorkspaceService workspaceService;
+
+    @Mock
     private DiffApplyService diffApplyService;
 
     private AgentConfigProperties agentConfig;
@@ -58,7 +62,7 @@ class IssueImplementationServiceTest {
         agentConfig.setMaxFiles(10);
         agentConfig.setBranchPrefix("ai-agent/");
         service = new IssueImplementationService(repositoryClient, aiClient, promptService, agentConfig,
-                sessionService, toolExecutionService, diffApplyService);
+                sessionService, toolExecutionService, workspaceService, diffApplyService);
     }
 
     @Test
