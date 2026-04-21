@@ -238,7 +238,7 @@ public class ToolExecutionService {
             int lastLine = Math.min(endLine, lines.size());
             StringBuilder output = new StringBuilder();
             for (int i = startLine; i <= lastLine; i++) {
-                output.append(String.format("%4d | %s%n", i, lines.get(i - 1)));
+                output.append(String.format("%d | %s%n", i, lines.get(i - 1)));
             }
             if (output.isEmpty()) {
                 output.append("No content in requested line range.");
