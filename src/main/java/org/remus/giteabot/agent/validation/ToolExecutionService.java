@@ -13,10 +13,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import java.util.stream.Stream;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Executes external tools (e.g. build / test commands) requested by the AI agent.
@@ -30,8 +32,10 @@ public class ToolExecutionService {
 
     private static final int MAX_TOOL_OUTPUT_CHARS = 10_000;
     private static final int MAX_SEARCH_MATCHES = 200;
+    private static final int MAX_SEARCH_DEPTH = 12;
     private static final int MAX_TREE_DEPTH = 6;
     private static final int DEFAULT_GIT_LOG_LIMIT = 10;
+    private static final long MAX_TEXT_FILE_SIZE_BYTES = 1_000_000;
     private static final List<String> AVAILABLE_CONTEXT_TOOLS = List.of(
             "rg", "ripgrep", "grep", "find", "cat", "git-log", "git-blame", "tree");
 
@@ -98,6 +102,7 @@ public class ToolExecutionService {
         }
 
         return switch (normalizedTool) {
+            // Support both names because models often ask for either `rg` or `ripgrep`.
             case "rg", "ripgrep", "grep" -> executeSearchTool(workspaceDir, arguments);
             case "find" -> executeFindTool(workspaceDir, arguments);
             case "cat" -> executeCatTool(workspaceDir, arguments);
@@ -127,30 +132,38 @@ public class ToolExecutionService {
             return new ToolResult(false, 1, "", "Path not found: " + relativePath);
         }
 
-        Pattern pattern;
+        Pattern compiledPattern;
         try {
-            pattern = Pattern.compile(patternText);
+            compiledPattern = Pattern.compile(patternText);
         } catch (PatternSyntaxException e) {
-            pattern = Pattern.compile(Pattern.quote(patternText));
+            compiledPattern = Pattern.compile(Pattern.quote(patternText));
         }
+        final Pattern pattern = compiledPattern;
 
         List<String> matches = new ArrayList<>();
-        try (Stream<Path> stream = Files.walk(basePath)) {
+        try (Stream<Path> stream = Files.walk(basePath, MAX_SEARCH_DEPTH)) {
             List<Path> files = stream
                     .filter(Files::isRegularFile)
                     .filter(path -> isReasonableTextFile(path))
                     .sorted()
                     .toList();
 
+            AtomicBoolean limitReached = new AtomicBoolean(false);
             for (Path file : files) {
-                List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
-                for (int i = 0; i < lines.size(); i++) {
-                    if (pattern.matcher(lines.get(i)).find()) {
-                        matches.add(workspaceDir.relativize(file) + ":" + (i + 1) + ": " + lines.get(i));
-                        if (matches.size() >= MAX_SEARCH_MATCHES) {
-                            return new ToolResult(true, 0, truncateOutput(String.join("\n", matches)), "");
+                AtomicInteger lineNumber = new AtomicInteger(0);
+                try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
+                    lines.forEachOrdered(line -> {
+                        int currentLine = lineNumber.incrementAndGet();
+                        if (!limitReached.get() && pattern.matcher(line).find()) {
+                            matches.add(workspaceDir.relativize(file) + ":" + currentLine + ": " + line);
+                            if (matches.size() >= MAX_SEARCH_MATCHES) {
+                                limitReached.set(true);
+                            }
                         }
-                    }
+                    });
+                }
+                if (limitReached.get()) {
+                    return new ToolResult(true, 0, truncateOutput(String.join("\n", matches)), "");
                 }
             }
         } catch (IOException e) {
@@ -372,7 +385,7 @@ public class ToolExecutionService {
 
     private boolean isReasonableTextFile(Path path) {
         try {
-            return Files.size(path) <= 1_000_000;
+            return Files.size(path) <= MAX_TEXT_FILE_SIZE_BYTES;
         } catch (IOException e) {
             return false;
         }
