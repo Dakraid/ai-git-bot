@@ -1,5 +1,6 @@
 package org.remus.giteabot.agent.issueimpl;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -63,6 +64,15 @@ public class AiResponseParser {
 
             // Check if AI is requesting more files
             List<String> requestFiles = response.getRequestFiles();
+            List<ImplementationPlan.ToolRequest> requestTools = response.getRequestTools() != null
+                    ? response.getRequestTools().stream()
+                    .filter(tool -> tool.getTool() != null && !tool.getTool().isBlank())
+                    .map(tool -> ImplementationPlan.ToolRequest.builder()
+                            .tool(tool.getTool())
+                            .args(tool.getArgs())
+                            .build())
+                    .toList()
+                    : List.of();
 
             // Parse file changes if present
             List<FileChange> fileChanges = new ArrayList<>();
@@ -89,6 +99,7 @@ public class AiResponseParser {
             return ImplementationPlan.builder()
                     .summary(response.getSummary())
                     .requestFiles(requestFiles)
+                    .requestTools(requestTools)
                     .fileChanges(fileChanges)
                     .toolRequest(toolRequest)
                     .build();
@@ -362,7 +373,10 @@ public class AiResponseParser {
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class AiImplementationResponse {
         private String summary;
+        @JsonAlias("requestedFiles")
         private List<String> requestFiles;
+        @JsonAlias("requestedTools")
+        private List<AiToolRequest> requestTools;
         private List<AiFileChange> fileChanges;
         private AiToolRequest runTool;
     }
@@ -390,7 +404,7 @@ public class AiResponseParser {
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class FileRequestResponse {
         private String reasoning;
+        @JsonAlias("requestFiles")
         private List<String> requestedFiles;
     }
 }
-

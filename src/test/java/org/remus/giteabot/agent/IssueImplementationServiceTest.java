@@ -7,8 +7,10 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.remus.giteabot.agent.session.AgentSession;
 import org.remus.giteabot.agent.session.AgentSessionService;
+import org.remus.giteabot.agent.validation.ToolResult;
 import org.remus.giteabot.agent.validation.ToolExecutionService;
 import org.remus.giteabot.agent.validation.WorkspaceService;
+import org.remus.giteabot.agent.validation.WorkspaceResult;
 import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
 import org.remus.giteabot.config.AgentConfigProperties;
@@ -16,6 +18,7 @@ import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.gitea.model.WebhookPayload;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -253,6 +256,67 @@ class IssueImplementationServiceTest {
                 eq("class Config { int x; }"), anyString(), eq("ai-agent/issue-42"), eq("abc123"));
     }
 
+    @Test
+    void handleIssueComment_contextToolRequest_executesToolAndContinues() {
+        WebhookPayload payload = createCommentPayload("Please trace where Config is used");
+
+        AgentSession session = new AgentSession("testowner", "testrepo", 42L, "Add new feature X");
+        session.setBranchName("ai-agent/issue-42");
+        session.setPrNumber(1L);
+        session.setStatus(AgentSession.AgentSessionStatus.PR_CREATED);
+
+        when(sessionService.getSessionByIssue("testowner", "testrepo", 42L))
+                .thenReturn(Optional.of(session));
+        when(repositoryClient.getDefaultBranch("testowner", "testrepo")).thenReturn("main");
+        when(promptService.getSystemPrompt("agent")).thenReturn("You are an agent");
+        when(sessionService.toAiMessages(any())).thenReturn(
+                new ArrayList<>(List.of(AiMessage.builder().role("user").content("Please trace where Config is used").build())));
+
+        String firstResponse = """
+                ```json
+                {
+                  "summary": "Need to search for usages",
+                  "requestTools": [
+                    {"tool": "rg", "args": ["ConfigService", "src"]}
+                  ]
+                }
+                ```
+                """;
+        String secondResponse = """
+                ```json
+                {
+                  "summary": "Updated config after tracing usages",
+                  "fileChanges": [
+                    {
+                      "path": "src/Config.java",
+                      "operation": "UPDATE",
+                      "content": "class Config { boolean enabled = true; }"
+                    }
+                  ]
+                }
+                ```
+                """;
+
+        when(aiClient.chat(anyList(), anyString(), anyString(), isNull(), anyInt()))
+                .thenReturn(firstResponse, secondResponse);
+        when(workspaceService.prepareWorkspace(eq("testowner"), eq("testrepo"), eq("ai-agent/issue-42"),
+                eq(List.of()), isNull(), isNull()))
+                .thenReturn(WorkspaceResult.success(Path.of("/tmp/context-workspace"), List.of()));
+        when(toolExecutionService.executeContextTool(Path.of("/tmp/context-workspace"), "rg",
+                List.of("ConfigService", "src")))
+                .thenReturn(new ToolResult(true, 0, "src/Config.java:12: ConfigService configService", ""));
+        when(repositoryClient.getFileSha("testowner", "testrepo", "src/Config.java", "ai-agent/issue-42"))
+                .thenReturn("abc123");
+
+        service.handleIssueComment(payload);
+
+        verify(toolExecutionService).executeContextTool(Path.of("/tmp/context-workspace"), "rg",
+                List.of("ConfigService", "src"));
+        verify(workspaceService).cleanupWorkspace(Path.of("/tmp/context-workspace"));
+        verify(repositoryClient).createOrUpdateFile(eq("testowner"), eq("testrepo"), eq("src/Config.java"),
+                eq("class Config { boolean enabled = true; }"), anyString(), eq("ai-agent/issue-42"), eq("abc123"));
+    }
+
     private WebhookPayload createCommentPayload(String commentBody) {
         WebhookPayload payload = new WebhookPayload();
         payload.setAction("created");
@@ -306,4 +370,3 @@ class IssueImplementationServiceTest {
         return payload;
     }
 }
-
