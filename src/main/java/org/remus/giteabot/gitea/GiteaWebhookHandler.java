@@ -30,22 +30,24 @@ public class GiteaWebhookHandler {
     /**
      * Handles a Gitea webhook event for the given bot.
      *
-     * @param bot     the bot to process the webhook for
-     * @param payload the raw webhook payload
+     * @param bot            the bot to process the webhook for
+     * @param xGiteaEventType the value of the X-Gitea-Event-Type header (may be null)
+     * @param payload        the raw webhook payload
      * @return response indicating the result of webhook processing
      */
-    public ResponseEntity<String> handleWebhook(Bot bot, Map<String, Object> payload) {
+    public ResponseEntity<String> handleWebhook(Bot bot, String xGiteaEventType, Map<String, Object> payload) {
         // Convert the raw payload to WebhookPayload
         WebhookPayload webhookPayload = translatePayload(payload);
 
-        log.debug("Gitea payload state: action={}, pullRequest={}, comment={}, issue={}, sender={}",
+        log.debug("Gitea payload state: action={}, eventType={}, pullRequest={}, comment={}, issue={}, sender={}",
                 webhookPayload.getAction(),
+                xGiteaEventType,
                 webhookPayload.getPullRequest() != null ? "present" : "null",
                 webhookPayload.getComment() != null ? "present" : "null",
                 webhookPayload.getIssue() != null ? "present" : "null",
                 webhookPayload.getSender() != null ? webhookPayload.getSender().getLogin() : "null");
 
-        return handleBotWebhookEvent(bot, webhookPayload);
+        return handleBotWebhookEvent(bot, xGiteaEventType, webhookPayload);
     }
 
     // ---- Gitea → WebhookPayload translation ----
