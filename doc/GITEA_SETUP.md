@@ -119,10 +119,11 @@ In the bot's web UI:
 
 After setup, create a test pull request. The bot should:
 
-1. Automatically post an AI-generated code review
-2. Respond when mentioned in PR comments (e.g., `@ai_bot explain this`)
-3. Respond to inline review comments mentioning the bot
-4. React with 👀 to acknowledge commands
+1. Automatically post an AI-generated code review when a PR is opened or updated
+2. Automatically post an AI-generated code review when added as a reviewer on a PR
+3. Respond when mentioned in PR comments (e.g., `@ai_bot explain this`)
+4. Respond to inline review comments mentioning the bot
+5. React with 👀 to acknowledge commands
 
 Check the bot's application logs for troubleshooting if reviews don't appear.
 
