@@ -76,11 +76,16 @@ Webhooks tell Gitea to notify the bot when pull request events occur. Each bot h
    - **Content Type:** application/json
    - **Secret:** (leave empty — authentication is via the URL path)
 3. Under **Trigger On**, select **Custom Events**, then enable:
-   - ✅ **Pull Request**
-   - ✅ **Issue Comment**
-   - ✅ **Pull Request Review**
-   - ✅ **Pull Request Comment**
+   - ✅ **Pull Request** — triggers automatic review on PR open/update and handles review requests
+   - ✅ **Issue Comment** — allows the bot to respond to `@bot` mentions in PR and issue comments
+   - ✅ **Pull Request Comment** — allows the bot to respond to inline code review comments
    - ✅ **Issues** (only if using the agent feature)
+
+> **Note:** The "Pull Request Review" event listed in older documentation does not exist in
+> recent Gitea versions. The **Pull Request** event covers all pull request actions including
+> `opened`, `synchronized`, `closed`, and `review_requested` (when the bot is added as a reviewer).
+> Enable **Pull Request Review Requested** if you want the bot to automatically trigger a review
+> when added as a reviewer — this is handled by the same **Pull Request** webhook event.
 4. Click **Add Webhook**
 
 ### Organization-level Webhook
