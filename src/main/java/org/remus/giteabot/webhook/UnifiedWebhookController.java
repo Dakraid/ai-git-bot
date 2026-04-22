@@ -67,6 +67,7 @@ public class UnifiedWebhookController {
             @RequestHeader(value = "X-GitHub-Event", required = false) String xGitHubEvent,
             @RequestHeader(value = "X-Gitlab-Event", required = false) String xGitLabEvent,
             @RequestHeader(value = "X-Event-Key", required = false) String xEventKey,
+            @RequestHeader(value = "X-Gitea-Event-Type", required = false) String xGiteaEventType,
             @RequestBody Map<String, Object> payload) {
 
         return botService.findByWebhookSecret(webhookSecret)
@@ -76,7 +77,7 @@ public class UnifiedWebhookController {
                         return ResponseEntity.ok("bot disabled");
                     }
                     botService.incrementWebhookCallCount(bot);
-                    return routeToHandler(bot, xGitHubEvent, xGitLabEvent, xEventKey, payload);
+                    return routeToHandler(bot, xGitHubEvent, xGitLabEvent, xEventKey, xGiteaEventType, payload);
                 })
                 .orElseGet(() -> {
                     log.warn("No bot found for webhook secret: {}...",
@@ -92,6 +93,7 @@ public class UnifiedWebhookController {
                                                    String xGitHubEvent,
                                                    String xGitLabEvent,
                                                    String xEventKey,
+                                                   String xGiteaEventType,
                                                    Map<String, Object> payload) {
         RepositoryType providerType = bot.getGitIntegration().getProviderType();
         log.info("Webhook received for bot '{}' (provider={}, git={})",
@@ -100,7 +102,7 @@ public class UnifiedWebhookController {
                 bot.getGitIntegration().getName());
 
         return switch (providerType) {
-            case GITEA -> giteaHandler.handleWebhook(bot, payload);
+            case GITEA -> giteaHandler.handleWebhook(bot, xGiteaEventType, payload);
             case GITHUB -> gitHubHandler.handleWebhook(bot, xGitHubEvent, payload);
             case BITBUCKET -> bitbucketHandler.handleWebhook(bot, xEventKey, payload);
             case GITLAB -> gitLabHandler.handleWebhook(bot, xGitLabEvent, payload);
