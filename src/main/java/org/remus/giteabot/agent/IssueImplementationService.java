@@ -567,10 +567,16 @@ public class IssueImplementationService {
 
         log.info("Handling agent comment #{} on issue #{} in {}", commentId, issueNumber, repoFullName);
 
-        // Look up the session for this issue
+        // Look up the session for this issue.
+        // For PR comments, the issue number in the payload equals the PR number, so also
+        // try a session look-up by PR number when no direct issue session is found.
         Optional<AgentSession> sessionOpt = sessionService.getSessionByIssue(owner, repo, issueNumber);
         if (sessionOpt.isEmpty()) {
-            log.info("No agent session found for issue #{}, ignoring comment", issueNumber);
+            log.debug("No agent session found for issue #{}, trying PR number lookup", issueNumber);
+            sessionOpt = sessionService.getSessionByPr(owner, repo, issueNumber);
+        }
+        if (sessionOpt.isEmpty()) {
+            log.info("No agent session found for issue/PR #{}, ignoring comment", issueNumber);
             return;
         }
 
