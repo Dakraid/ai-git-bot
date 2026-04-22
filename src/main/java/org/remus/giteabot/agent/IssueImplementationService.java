@@ -43,6 +43,7 @@ public class IssueImplementationService {
 
     private static final String AGENT_PROMPT_NAME = "agent";
     private static final int MAX_FILE_CONTENT_CHARS = 100000;
+    private static final int MAX_CONTEXT_TOOL_REQUESTS = 5;
 
     private final RepositoryApiClient repositoryClient;
     private final AiClient aiClient;
@@ -132,12 +133,16 @@ public class IssueImplementationService {
                     agentConfig.getMaxTokens());
             sessionService.addMessage(session, "assistant", fileRequestResponse);
 
-            // Parse requested files
-            List<String> requestedFiles = responseParser.parseRequestedFiles(fileRequestResponse, tree);
-            log.info("AI requested {} files for context", requestedFiles.size());
+            ImplementationPlan initialContextPlan = responseParser.parseAiResponse(fileRequestResponse);
+            List<String> requestedFiles = initialContextPlan != null && initialContextPlan.getRequestFiles() != null
+                    ? initialContextPlan.getRequestFiles()
+                    : responseParser.parseRequestedFiles(fileRequestResponse, tree);
+            List<ImplementationPlan.ToolRequest> requestedTools =
+                    initialContextPlan != null ? initialContextPlan.getRequestTools() : List.of();
+            log.info("AI requested {} files and {} repository tools for context",
+                    requestedFiles.size(), requestedTools != null ? requestedTools.size() : 0);
 
-            // Fetch requested file contents
-            String fileContext = fetchSpecificFiles(owner, repo, baseBranch, requestedFiles);
+            String fileContext = fetchRequestedContext(owner, repo, baseBranch, requestedFiles, requestedTools);
 
             // STEP 2: Generate implementation with file context
             log.info("Step 2: Generating implementation for issue #{}", issueNumber);
@@ -249,7 +254,9 @@ public class IssueImplementationService {
 
         // Add available tools info to the initial message
         List<String> availableTools = toolExecutionService.getAvailableTools();
-        String toolsInfo = "\n\n**Available validation tools**: " + String.join(", ", availableTools);
+        String toolsInfo = "\n\n**Available repository context tools**: "
+                + String.join(", ", toolExecutionService.getAvailableContextTools())
+                + "\n**Available validation tools**: " + String.join(", ", availableTools);
         userMessage = userMessage + toolsInfo;
 
         // Store initial user message in session
@@ -285,14 +292,18 @@ public class IssueImplementationService {
                 }
 
                 // Handle file requests - AI wants to see more files before implementing
-                if (plan.hasFileRequests() && !plan.hasFileChanges() && fileRequestRounds < maxFileRequestRounds) {
+                if (plan.hasContextRequests() && !plan.hasFileChanges() && fileRequestRounds < maxFileRequestRounds) {
                     fileRequestRounds++;
-                    log.info("AI requesting {} additional files (round {}/{})",
-                            plan.getRequestFiles().size(), fileRequestRounds, maxFileRequestRounds);
+                    log.info("AI requesting additional context (files: {}, tools: {}) (round {}/{})",
+                            plan.getRequestFiles() != null ? plan.getRequestFiles().size() : 0,
+                            plan.getRequestTools() != null ? plan.getRequestTools().size() : 0,
+                            fileRequestRounds, maxFileRequestRounds);
 
-                    String fileContext = fetchSpecificFiles(owner, repo, defaultBranch, plan.getRequestFiles());
-                    String filesMessage = "Here are the requested files:\n" + fileContext +
-                            "\n\nNow implement the issue. Output JSON with fileChanges and runTool for validation.";
+                    String fileContext = fetchRequestedContext(owner, repo, defaultBranch,
+                            plan.getRequestFiles(), plan.getRequestTools());
+                    String filesMessage = "Here is the requested repository context:\n" + fileContext +
+                            "\n\nIf you need more context, request additional `requestFiles` or `requestTools`. " +
+                            "Otherwise implement the issue and output JSON with fileChanges and runTool for validation.";
 
                     conversationHistory.add(AiMessage.builder().role("user").content(currentMessage).build());
                     conversationHistory.add(AiMessage.builder().role("assistant").content(aiResponse).build());
@@ -556,10 +567,16 @@ public class IssueImplementationService {
 
         log.info("Handling agent comment #{} on issue #{} in {}", commentId, issueNumber, repoFullName);
 
-        // Look up the session for this issue
+        // Look up the session for this issue.
+        // For PR comments, the issue number in the payload equals the PR number, so also
+        // try a session look-up by PR number when no direct issue session is found.
         Optional<AgentSession> sessionOpt = sessionService.getSessionByIssue(owner, repo, issueNumber);
         if (sessionOpt.isEmpty()) {
-            log.info("No agent session found for issue #{}, ignoring comment", issueNumber);
+            log.debug("No agent session found for issue #{}, trying PR number lookup", issueNumber);
+            sessionOpt = sessionService.getSessionByPr(owner, repo, issueNumber);
+        }
+        if (sessionOpt.isEmpty()) {
+            log.info("No agent session found for issue/PR #{}, ignoring comment", issueNumber);
             return;
         }
 
@@ -610,15 +627,19 @@ public class IssueImplementationService {
             // Handle file requests - AI wants to see more files (loop up to 3 rounds)
             int maxFileRequestRounds = 3;
             int fileRequestRounds = 0;
-            while (plan != null && plan.hasFileRequests() && fileRequestRounds < maxFileRequestRounds) {
+            while (plan != null && plan.hasContextRequests() && fileRequestRounds < maxFileRequestRounds) {
                 fileRequestRounds++;
-                log.info("AI requesting {} additional files (round {}/{})",
-                        plan.getRequestFiles().size(), fileRequestRounds, maxFileRequestRounds);
-                String fileContext = fetchSpecificFiles(owner, repo, workingBranch, plan.getRequestFiles());
+                log.info("AI requesting additional context (files: {}, tools: {}) (round {}/{})",
+                        plan.getRequestFiles() != null ? plan.getRequestFiles().size() : 0,
+                        plan.getRequestTools() != null ? plan.getRequestTools().size() : 0,
+                        fileRequestRounds, maxFileRequestRounds);
+                String fileContext = fetchRequestedContext(owner, repo, workingBranch,
+                        plan.getRequestFiles(), plan.getRequestTools());
 
                 // Send files and ask AI to continue
-                String filesMessage = "Here are the requested files:\n" + fileContext +
-                        "\n\nPlease continue with the implementation. Output JSON per system prompt format.";
+                String filesMessage = "Here is the requested repository context:\n" + fileContext +
+                        "\n\nIf you need more context, request additional `requestFiles` or `requestTools`. " +
+                        "Otherwise continue with the implementation. Output JSON per system prompt format.";
                 sessionService.addMessage(session, "user", filesMessage);
 
                 List<AiMessage> updatedHistory = sessionService.toAiMessages(session);
@@ -746,7 +767,83 @@ public class IssueImplementationService {
                 .fileChanges(mergedChanges)
                 .toolRequest(newPlan.getToolRequest())
                 .requestFiles(newPlan.getRequestFiles())
+                .requestTools(newPlan.getRequestTools())
                 .build();
+    }
+
+    /**
+     * Fetches any additional repository context requested by the AI.
+     */
+    private String fetchRequestedContext(String owner, String repo, String ref,
+                                         List<String> filePaths,
+                                         List<ImplementationPlan.ToolRequest> toolRequests) {
+        StringBuilder sb = new StringBuilder();
+
+        if (filePaths != null && !filePaths.isEmpty()) {
+            sb.append("## Requested Files\n");
+            sb.append(fetchSpecificFiles(owner, repo, ref, filePaths));
+        }
+
+        String toolOutput = executeRequestedContextTools(owner, repo, ref, toolRequests);
+        if (!toolOutput.isBlank()) {
+            if (!sb.isEmpty()) {
+                sb.append("\n");
+            }
+            sb.append("## Repository Tool Results\n");
+            sb.append(toolOutput);
+        }
+
+        if (sb.isEmpty()) {
+            return "No additional repository context could be retrieved.";
+        }
+        return sb.toString();
+    }
+
+    private String executeRequestedContextTools(String owner, String repo, String ref,
+                                                List<ImplementationPlan.ToolRequest> toolRequests) {
+        if (toolRequests == null || toolRequests.isEmpty()) {
+            return "";
+        }
+
+        WorkspaceResult workspaceResult = workspaceService.prepareWorkspace(owner, repo, ref, List.of(),
+                repositoryClient.getCloneUrl(), repositoryClient.getToken());
+        if (!workspaceResult.success()) {
+            return "Unable to prepare repository workspace for context tools: " + workspaceResult.error();
+        }
+
+        Path workspaceDir = workspaceResult.workspacePath();
+        try {
+            StringBuilder sb = new StringBuilder();
+            int toolCount = 0;
+            for (ImplementationPlan.ToolRequest toolRequest : toolRequests) {
+                if (toolRequest == null || toolRequest.getTool() == null || toolRequest.getTool().isBlank()) {
+                    continue;
+                }
+                if (toolCount >= MAX_CONTEXT_TOOL_REQUESTS) {
+                    sb.append("\nAdditional tool requests were skipped after reaching the per-round limit of ")
+                            .append(MAX_CONTEXT_TOOL_REQUESTS).append(".\n");
+                    break;
+                }
+                toolCount++;
+
+                ToolResult result = toolExecutionService.executeContextTool(
+                        workspaceDir, toolRequest.getTool(), toolRequest.getArgs());
+                sb.append("### `").append(toolRequest.getTool());
+                if (toolRequest.getArgs() != null && !toolRequest.getArgs().isEmpty()) {
+                    sb.append(" ").append(String.join(" ", toolRequest.getArgs()));
+                }
+                sb.append("`\n");
+                if (result.success()) {
+                    sb.append(result.output().isBlank() ? "(no output)" : result.output()).append("\n\n");
+                } else {
+                    sb.append("Failed: ").append(result.error().isBlank() ? result.output() : result.error())
+                            .append("\n\n");
+                }
+            }
+            return sb.toString().strip();
+        } finally {
+            workspaceService.cleanupWorkspace(workspaceDir);
+        }
     }
 
     /**
@@ -791,4 +888,3 @@ public class IssueImplementationService {
         return ref;
     }
 }
-

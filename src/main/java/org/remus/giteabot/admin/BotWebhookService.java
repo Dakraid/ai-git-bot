@@ -98,6 +98,43 @@ public class BotWebhookService {
     }
 
     /**
+     * Handles a comment on a PR discussion thread.
+     * <p>
+     * Routes to the agent when an agent session exists for the PR (i.e. the PR was created by the
+     * agent and can be continued), or falls back to the code-review handler for manually created PRs.
+     */
+    @Async
+    public void handlePrComment(Bot bot, WebhookPayload payload) {
+        String owner = payload.getRepository().getOwner().getLogin();
+        String repo = payload.getRepository().getName();
+        Long prNumber = payload.getPullRequest().getNumber();
+        Long issueNumber = payload.getIssue().getNumber(); // equals prNumber for PRs in Gitea
+
+        boolean hasAgentSession =
+                agentSessionService.getSessionByIssue(owner, repo, issueNumber).isPresent()
+                || agentSessionService.getSessionByPr(owner, repo, prNumber).isPresent();
+
+        if (hasAgentSession && bot.isAgentEnabled()) {
+            log.debug("[Bot '{}'] Agent session found for PR #{}, routing to agent", bot.getName(), prNumber);
+            try {
+                createIssueImplementationService(bot).handleIssueComment(payload);
+            } catch (Exception e) {
+                log.error("[Bot '{}'] Failed to handle PR comment via agent: {}", bot.getName(), e.getMessage(), e);
+                botService.recordError(bot, e.getMessage());
+            }
+        } else {
+            log.debug("[Bot '{}'] No agent session for PR #{}, routing to code-review handler",
+                    bot.getName(), prNumber);
+            try {
+                createCodeReviewService(bot).handleBotCommand(payload, null);
+            } catch (Exception e) {
+                log.error("[Bot '{}'] Failed to handle PR comment via review handler: {}", bot.getName(), e.getMessage(), e);
+                botService.recordError(bot, e.getMessage());
+            }
+        }
+    }
+
+    /**
      * Handles an inline review comment mentioning the bot.
      * Delegates to {@link CodeReviewService#handleInlineComment(WebhookPayload, String)}.
      */

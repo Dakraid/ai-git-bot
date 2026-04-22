@@ -63,6 +63,18 @@ public class IssueNotificationService {
             comment.append("\n\n");
         }
 
+        if (plan != null && plan.hasContextToolRequests()) {
+            comment.append("🔎 **Requesting repository tools**:\n");
+            for (ImplementationPlan.ToolRequest toolReq : plan.getRequestTools()) {
+                comment.append("- `").append(toolReq.getTool());
+                if (toolReq.getArgs() != null && !toolReq.getArgs().isEmpty()) {
+                    comment.append(" ").append(String.join(" ", toolReq.getArgs()));
+                }
+                comment.append("`\n");
+            }
+            comment.append("\n");
+        }
+
         // Add file changes info if present
         if (plan != null && plan.hasFileChanges()) {
             comment.append("📄 **Planned file changes** (").append(plan.getFileChanges().size()).append("):\n");
@@ -178,4 +190,3 @@ public class IssueNotificationService {
         repositoryClient.postComment(owner, repo, issueNumber, updateComment);
     }
 }
-

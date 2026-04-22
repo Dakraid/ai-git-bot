@@ -27,11 +27,22 @@ public class AgentPromptBuilder {
                 ## Repository Files
                 %s
                 
-                Which files do you need to see? Output JSON:
+                Which repository context do you need before coding? Output JSON:
                 ```json
-                {"reasoning": "...", "requestedFiles": ["path/file1", "path/file2"]}
+                {
+                  "summary": "Need more context",
+                  "requestFiles": ["path/file1", "path/file2"],
+                  "requestTools": [{"tool": "rg", "args": ["UserService.save", "src"]}]
+                }
                 ```
-                Request max 20 files (files to modify, related interfaces/DTOs, configs).
+                You may request max 20 files and up to 5 repository tools.
+                Available repository tools:
+                - `rg` / `ripgrep` / `grep`: search text usages (`["pattern"]` or `["pattern", "path"]`)
+                - `find`: find files by glob (`["*.yml"]` or `["*.java", "src"]`)
+                - `cat`: read a file with line numbers (`["path/file", "startLine", "endLine"]`)
+                - `git-log`: inspect change history (`["path/file", "10"]`)
+                - `git-blame`: inspect line history (`["path/file", "startLine", "endLine"]`)
+                - `tree`: inspect directories (`["src", "3"]`)
                 """, issueTitle, issueBody != null ? issueBody : "(none)", treeContext);
     }
 
@@ -51,7 +62,8 @@ public class AgentPromptBuilder {
                 ## File Contents
                 %s
                 
-                Implement the issue. Output JSON per system prompt format.
+                If you still need more repository context, you may request additional `requestFiles` or `requestTools`.
+                Otherwise implement the issue. Output JSON per system prompt format.
                 """, issueTitle, issueBody != null ? issueBody : "(none)", treeContext, fileContext);
     }
 
@@ -198,4 +210,3 @@ public class AgentPromptBuilder {
         return sb.toString();
     }
 }
-

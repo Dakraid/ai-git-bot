@@ -135,6 +135,31 @@ class AiResponseParserTest {
     }
 
     @Test
+    void parseAiResponse_withRequestedFilesAndTools_returnsPlan() {
+        String aiResponse = """
+                ```json
+                {
+                  "summary": "Need more context",
+                  "requestedFiles": ["src/Main.java"],
+                  "requestedTools": [
+                    {"tool": "rg", "args": ["UserService.save", "src"]},
+                    {"tool": "cat", "args": ["pom.xml", "1", "20"]}
+                  ]
+                }
+                ```
+                """;
+
+        ImplementationPlan plan = parser.parseAiResponse(aiResponse);
+
+        assertThat(plan).isNotNull();
+        assertThat(plan.hasContextRequests()).isTrue();
+        assertThat(plan.getRequestFiles()).containsExactly("src/Main.java");
+        assertThat(plan.getRequestTools()).hasSize(2);
+        assertThat(plan.getRequestTools().getFirst().getTool()).isEqualTo("rg");
+        assertThat(plan.getRequestTools().get(1).getArgs()).containsExactly("pom.xml", "1", "20");
+    }
+
+    @Test
     void parseAiResponse_withToolRequest_returnsPlanWithTool() {
         String aiResponse = """
                 ```json
@@ -393,7 +418,7 @@ class AiResponseParserTest {
     void parseRequestedFiles_validJsonResponse_returnsFiles() {
         String response = """
                 ```json
-                {"reasoning": "Need to see these", "requestedFiles": ["src/Main.java", "pom.xml"]}
+                {"reasoning": "Need to see these", "requestFiles": ["src/Main.java", "pom.xml"]}
                 ```
                 """;
         List<Map<String, Object>> tree = List.of(
@@ -436,4 +461,3 @@ class AiResponseParserTest {
         assertThat(files).containsExactlyInAnyOrder("pom.xml", "README.md");
     }
 }
-

@@ -52,7 +52,9 @@ class AgentPromptBuilderTest {
         assertThat(prompt).contains("Fix bug");
         assertThat(prompt).contains("Description of bug");
         assertThat(prompt).contains("src/Main.java");
-        assertThat(prompt).contains("requestedFiles");
+        assertThat(prompt).contains("requestFiles");
+        assertThat(prompt).contains("requestTools");
+        assertThat(prompt).contains("git-blame");
     }
 
     @Test
@@ -71,6 +73,7 @@ class AgentPromptBuilderTest {
         assertThat(prompt).contains("Feature description");
         assertThat(prompt).contains("tree context");
         assertThat(prompt).contains("file contents");
+        assertThat(prompt).contains("requestTools");
     }
 
     @Test
@@ -107,4 +110,3 @@ class AgentPromptBuilderTest {
         assertThat(builder.buildPreviousChangesInfo(null)).isEmpty();
     }
 }
-
