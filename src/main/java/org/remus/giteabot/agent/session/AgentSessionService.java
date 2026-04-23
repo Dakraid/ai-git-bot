@@ -46,11 +46,6 @@ public class AgentSessionService {
         return repository.save(session);
     }
 
-    @Transactional
-    public AgentSession addFileChange(AgentSession session, String path, String operation, String commitSha) {
-        session.addFileChange(path, operation, commitSha);
-        return repository.save(session);
-    }
 
     @Transactional
     public AgentSession setBranchName(AgentSession session, String branchName) {
@@ -91,23 +86,4 @@ public class AgentSessionService {
                         .build())
                 .toList();
     }
-
-    /**
-     * Builds a summary of file changes made in this session.
-     * Changes are sorted by ID to maintain chronological order.
-     */
-    public String buildFileChangesSummary(AgentSession session) {
-        if (session.getFileChanges().isEmpty()) {
-            return "No file changes recorded.";
-        }
-
-        StringBuilder sb = new StringBuilder("File changes made in this session:\n");
-        session.getFileChanges().stream()
-                .sorted(Comparator.comparing(AgentFileChange::getId,
-                        Comparator.nullsFirst(Comparator.naturalOrder())))
-                .forEach(change ->
-                        sb.append(String.format("- %s: `%s`%n", change.getOperation(), change.getPath())));
-        return sb.toString();
-    }
 }
-

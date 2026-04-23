@@ -1,8 +1,6 @@
 package org.remus.giteabot.agent.validation;
 
 import lombok.extern.slf4j.Slf4j;
-import org.remus.giteabot.agent.DiffApplyService;
-import org.remus.giteabot.agent.model.FileChange;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -11,9 +9,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -22,34 +18,29 @@ import java.util.concurrent.TimeUnit;
  * Responsibilities:
  * <ul>
  *     <li>Cloning a repository into a temporary directory</li>
- *     <li>Applying {@link FileChange}s (create / update / delete) — including
- *         diff-based updates via {@link DiffApplyService}</li>
+ *     <li>Committing and pushing workspace changes back to the remote</li>
  *     <li>Cleaning up temporary workspace directories</li>
  * </ul>
+ * <p>
+ * File changes (write-file, patch-file, mkdir, delete-file) are now performed
+ * directly via {@link org.remus.giteabot.agent.validation.ToolExecutionService}.
  */
 @Slf4j
 @Service
 public class WorkspaceService {
 
-    private final DiffApplyService diffApplyService;
-
-    public WorkspaceService(DiffApplyService diffApplyService) {
-        this.diffApplyService = diffApplyService;
-    }
 
     /**
-     * Prepares a workspace by cloning the repository and applying file changes.
+     * Prepares a workspace by cloning the repository.
      *
-     * @param owner       Repository owner
-     * @param repo        Repository name
-     * @param branch      The branch to clone
-     * @param fileChanges The file changes to apply after cloning
+     * @param owner        Repository owner
+     * @param repo         Repository name
+     * @param branch       The branch to clone
      * @param cloneBaseUrl The Git server base URL (e.g. {@code http://localhost:3000})
-     * @param token       The API / clone token
+     * @param token        The API / clone token
      * @return {@link WorkspaceResult} containing the workspace path or error details
      */
     public WorkspaceResult prepareWorkspace(String owner, String repo, String branch,
-                                            List<FileChange> fileChanges,
                                             String cloneBaseUrl, String token) {
         try {
             Path tempDir = Files.createTempDirectory("agent-workspace-");
@@ -67,18 +58,7 @@ public class WorkspaceService {
                 return WorkspaceResult.failure("Failed to clone repository: " + cloneResult.output());
             }
 
-            List<String> failedDiffs = new ArrayList<>();
-            for (FileChange change : fileChanges) {
-                try {
-                    applyFileChangeToWorkspace(tempDir, change);
-                } catch (DiffApplyService.DiffApplyException e) {
-                    log.warn("Diff application failed for {} during workspace preparation: {}",
-                            change.getPath(), e.getMessage());
-                    failedDiffs.add(change.getPath());
-                }
-            }
-
-            return WorkspaceResult.success(tempDir, failedDiffs);
+            return WorkspaceResult.success(tempDir);
 
         } catch (IOException e) {
             log.error("Failed to prepare workspace: {}", e.getMessage());
@@ -87,52 +67,71 @@ public class WorkspaceService {
     }
 
     /**
-     * Applies a single {@link FileChange} to the workspace directory.
+     * Commits all changes in the workspace and pushes them to the remote.
      * <p>
-     * For diff-based UPDATE operations the existing file is read, the diff is
-     * applied via {@link DiffApplyService}, and the result is written back.
-     * For CREATE or full-content UPDATE operations the content is written directly.
+     * If {@code createNewBranch} is {@code true} a new local branch is created first
+     * ({@code git checkout -b branchName}).  Otherwise the workspace is assumed to be
+     * already on the target branch (cloned with {@code --branch branchName}).
      *
-     * @param workspaceDir The workspace directory (cloned repo root)
-     * @param change       The file change to apply
-     * @throws IOException if a file operation fails
+     * @param workspaceDir    The workspace directory
+     * @param branchName      Name of the target branch (new or existing)
+     * @param commitMessage   Commit message
+     * @param authorName      Git author name
+     * @param authorEmail     Git author e-mail
+     * @param createNewBranch {@code true} to create the branch before committing
+     * @return {@code true} if commit and push succeeded
      */
-    public void applyFileChangeToWorkspace(Path workspaceDir, FileChange change) throws IOException {
-        Path filePath = workspaceDir.resolve(change.getPath());
-
-        switch (change.getOperation()) {
-            case CREATE -> {
-                Files.createDirectories(filePath.getParent());
-                Files.writeString(filePath, change.getContent());
-            }
-            case UPDATE -> {
-                Files.createDirectories(filePath.getParent());
-                if (change.isDiffBased()) {
-                    if (Files.exists(filePath)) {
-                        String existingContent = Files.readString(filePath);
-                        try {
-                            String newContent = diffApplyService.applyDiff(existingContent, change.getDiff());
-                            Files.writeString(filePath, newContent);
-                        } catch (DiffApplyService.DiffApplyException e) {
-                            log.warn("Diff application failed for {}: {}. " +
-                                            "Keeping original file content — the agent should provide " +
-                                            "the complete file content instead of a diff.",
-                                    change.getPath(), e.getMessage());
-                            // Original file content is preserved (writeString was never called).
-                            // Rethrow so callers can collect the failure and ask the AI for full content.
-                            throw e;
-                        }
-                    } else {
-                        log.warn("Diff-based update for {} but file does not exist in workspace, skipping",
-                                change.getPath());
-                    }
-                } else {
-                    Files.writeString(filePath, change.getContent());
-                }
-            }
-            case DELETE -> Files.deleteIfExists(filePath);
+    public boolean commitAndPush(Path workspaceDir, String branchName, String commitMessage,
+                                 String authorName, String authorEmail, boolean createNewBranch) {
+        // Configure git author
+        if (!runCommand(workspaceDir.toFile(),
+                new String[]{"git", "config", "user.email", authorEmail}, 10).success()) {
+            log.warn("Could not set git user.email, continuing anyway");
         }
+        if (!runCommand(workspaceDir.toFile(),
+                new String[]{"git", "config", "user.name", authorName}, 10).success()) {
+            log.warn("Could not set git user.name, continuing anyway");
+        }
+
+        if (createNewBranch) {
+            CommandResult checkoutResult = runCommand(workspaceDir.toFile(),
+                    new String[]{"git", "checkout", "-b", branchName}, 15);
+            if (!checkoutResult.success()) {
+                log.error("Failed to create branch '{}': {}", branchName, checkoutResult.output());
+                return false;
+            }
+        }
+
+        CommandResult addResult = runCommand(workspaceDir.toFile(),
+                new String[]{"git", "add", "-A"}, 15);
+        if (!addResult.success()) {
+            log.error("git add -A failed: {}", addResult.output());
+            return false;
+        }
+
+        CommandResult commitResult = runCommand(workspaceDir.toFile(),
+                new String[]{"git", "commit", "-m", commitMessage}, 15);
+        if (!commitResult.success()) {
+            // "nothing to commit" is not a real error
+            if (commitResult.output().contains("nothing to commit")) {
+                log.warn("Nothing to commit in workspace — no file changes were made");
+                return false;
+            }
+            log.error("git commit failed: {}", commitResult.output());
+            return false;
+        }
+
+        CommandResult pushResult = runCommand(workspaceDir.toFile(),
+                new String[]{"git", "push", "origin", branchName}, 60);
+        if (!pushResult.success()) {
+            log.error("git push failed: {}", pushResult.output());
+            return false;
+        }
+
+        log.info("Successfully committed and pushed to branch '{}'", branchName);
+        return true;
     }
+
 
     /**
      * Cleans up a workspace directory by deleting it recursively.

@@ -1,7 +1,6 @@
 package org.remus.giteabot.admin;
 
 import lombok.extern.slf4j.Slf4j;
-import org.remus.giteabot.agent.DiffApplyService;
 import org.remus.giteabot.agent.IssueImplementationService;
 import org.remus.giteabot.agent.session.AgentSessionService;
 import org.remus.giteabot.agent.validation.ToolExecutionService;
@@ -42,7 +41,6 @@ public class BotWebhookService {
     private final AgentSessionService agentSessionService;
     private final ToolExecutionService toolExecutionService;
     private final WorkspaceService workspaceService;
-    private final DiffApplyService diffApplyService;
     private final BotService botService;
 
     public BotWebhookService(AiClientFactory aiClientFactory,
@@ -54,7 +52,6 @@ public class BotWebhookService {
                              AgentSessionService agentSessionService,
                              ToolExecutionService toolExecutionService,
                              WorkspaceService workspaceService,
-                             DiffApplyService diffApplyService,
                              BotService botService) {
         this.aiClientFactory = aiClientFactory;
         this.giteaClientFactory = giteaClientFactory;
@@ -65,7 +62,6 @@ public class BotWebhookService {
         this.agentSessionService = agentSessionService;
         this.toolExecutionService = toolExecutionService;
         this.workspaceService = workspaceService;
-        this.diffApplyService = diffApplyService;
         this.botService = botService;
     }
 
@@ -252,6 +248,6 @@ public class BotWebhookService {
         AiClient aiClient = aiClientFactory.getClient(bot.getAiIntegration());
         RepositoryApiClient repoClient = giteaClientFactory.getApiClient(bot.getGitIntegration());
         return new IssueImplementationService(repoClient, aiClient, promptService, agentConfig,
-                agentSessionService, toolExecutionService, workspaceService, diffApplyService);
+                agentSessionService, toolExecutionService, workspaceService);
     }
 }

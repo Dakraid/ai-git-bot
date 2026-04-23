@@ -38,6 +38,9 @@ public class ToolExecutionService {
     private static final long MAX_TEXT_FILE_SIZE_BYTES = 1_000_000;
     private static final List<String> AVAILABLE_CONTEXT_TOOLS = List.of(
             "rg", "ripgrep", "grep", "find", "cat", "git-log", "git-blame", "tree");
+    /** File-modification tools — run in the workspace but results are NOT posted as public comments. */
+    private static final List<String> AVAILABLE_FILE_TOOLS = List.of(
+            "write-file", "patch-file", "mkdir", "delete-file");
 
     private final AgentConfigProperties agentConfig;
 
@@ -57,6 +60,38 @@ public class ToolExecutionService {
      */
     public List<String> getAvailableContextTools() {
         return AVAILABLE_CONTEXT_TOOLS;
+    }
+
+    /**
+     * Returns the file-modification tools the AI can use to create/patch/delete files
+     * in the workspace. Results go back to the AI but are NOT posted as public comments.
+     */
+    public List<String> getAvailableFileTools() {
+        return AVAILABLE_FILE_TOOLS;
+    }
+
+    /**
+     * Returns {@code true} if the given tool name belongs to the read-only context tools
+     * (e.g. {@code cat}, {@code rg}) whose results should not be posted as issue comments.
+     */
+    public boolean isContextTool(String tool) {
+        return AVAILABLE_CONTEXT_TOOLS.contains(tool != null ? tool.strip().toLowerCase() : "");
+    }
+
+    /**
+     * Returns {@code true} if the given tool is a file-modification tool
+     * (write-file, patch-file, mkdir, delete-file).
+     */
+    public boolean isFileTool(String tool) {
+        return AVAILABLE_FILE_TOOLS.contains(tool != null ? tool.strip().toLowerCase() : "");
+    }
+
+    /**
+     * Returns {@code true} if the tool result should NOT be posted as a public issue comment.
+     * Both context tools and file tools are "silent".
+     */
+    public boolean isSilentTool(String tool) {
+        return isContextTool(tool) || isFileTool(tool);
     }
 
     /**
@@ -114,6 +149,128 @@ public class ToolExecutionService {
         };
     }
 
+    /**
+     * Executes a file-modification tool (write-file, patch-file, mkdir, delete-file)
+     * in the given workspace.  Results are passed back to the AI but never posted as
+     * public issue comments.
+     *
+     * @param workspaceDir The workspace directory (cloned repo root)
+     * @param tool         One of the {@link #AVAILABLE_FILE_TOOLS}
+     * @param arguments    Tool-specific arguments
+     * @return The execution result
+     */
+    public ToolResult executeFileTool(Path workspaceDir, String tool, List<String> arguments) {
+        String normalizedTool = tool != null ? tool.strip().toLowerCase() : "";
+        if (!AVAILABLE_FILE_TOOLS.contains(normalizedTool)) {
+            return new ToolResult(false, -1, "",
+                    "File tool '" + tool + "' is not available. Available file tools: "
+                            + String.join(", ", AVAILABLE_FILE_TOOLS));
+        }
+        return switch (normalizedTool) {
+            case "write-file" -> executeWriteFileTool(workspaceDir, arguments);
+            case "patch-file" -> executePatchFileTool(workspaceDir, arguments);
+            case "mkdir"      -> executeMkdirTool(workspaceDir, arguments);
+            case "delete-file" -> executeDeleteFileTool(workspaceDir, arguments);
+            default -> new ToolResult(false, -1, "", "File tool '" + tool + "' is not implemented");
+        };
+    }
+
+    private ToolResult executeWriteFileTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.size() < 2) {
+            return new ToolResult(false, -1, "", "write-file requires two arguments: <path> <content>");
+        }
+        String relativePath = arguments.get(0);
+        String content      = arguments.get(1);
+        Path filePath;
+        try {
+            filePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        try {
+            Files.createDirectories(filePath.getParent());
+            Files.writeString(filePath, content, StandardCharsets.UTF_8);
+            log.info("write-file: wrote {} bytes to {}", content.length(), relativePath);
+            return new ToolResult(true, 0, "File written: " + relativePath, "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "write-file failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executePatchFileTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.size() < 3) {
+            return new ToolResult(false, -1, "",
+                    "patch-file requires three arguments: <path> <search-text> <replacement-text>");
+        }
+        String relativePath  = arguments.get(0);
+        String searchText    = arguments.get(1);
+        String replacementText = arguments.get(2);
+        Path filePath;
+        try {
+            filePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        if (!Files.isRegularFile(filePath)) {
+            return new ToolResult(false, 1, "", "patch-file: file not found: " + relativePath);
+        }
+        try {
+            String originalContent = Files.readString(filePath, StandardCharsets.UTF_8);
+            if (!originalContent.contains(searchText)) {
+                return new ToolResult(false, 1, "",
+                        "patch-file: search text not found in file: " + relativePath
+                                + ". Use `cat` to inspect the exact content first.");
+            }
+            String newContent = originalContent.replace(searchText, replacementText);
+            Files.writeString(filePath, newContent, StandardCharsets.UTF_8);
+            log.info("patch-file: patched {}", relativePath);
+            return new ToolResult(true, 0, "File patched: " + relativePath, "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "patch-file failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executeMkdirTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "mkdir requires a path argument");
+        }
+        String relativePath = arguments.getFirst();
+        Path dirPath;
+        try {
+            dirPath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        try {
+            Files.createDirectories(dirPath);
+            log.info("mkdir: created directory {}", relativePath);
+            return new ToolResult(true, 0, "Directory created: " + relativePath, "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "mkdir failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executeDeleteFileTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "delete-file requires a path argument");
+        }
+        String relativePath = arguments.getFirst();
+        Path filePath;
+        try {
+            filePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        try {
+            boolean deleted = Files.deleteIfExists(filePath);
+            String msg = deleted ? "File deleted: " + relativePath : "File did not exist: " + relativePath;
+            log.info("delete-file: {}", msg);
+            return new ToolResult(true, 0, msg, "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "delete-file failed: " + e.getMessage());
+        }
+    }
+
     private ToolResult executeSearchTool(Path workspaceDir, List<String> arguments) {
         if (arguments == null || arguments.isEmpty()) {
             return new ToolResult(false, -1, "", "Search tool requires at least a pattern argument");
@@ -144,7 +301,7 @@ public class ToolExecutionService {
         try (Stream<Path> stream = Files.walk(basePath, MAX_SEARCH_DEPTH)) {
             List<Path> files = stream
                     .filter(Files::isRegularFile)
-                    .filter(path -> isReasonableTextFile(path))
+                    .filter(this::isReasonableTextFile)
                     .sorted()
                     .toList();
 
@@ -325,7 +482,7 @@ public class ToolExecutionService {
                 }
             }
         }
-        maxDepth = Math.min(Math.max(maxDepth, 1), MAX_TREE_DEPTH);
+        maxDepth = Math.clamp(maxDepth, 1, MAX_TREE_DEPTH);
 
         Path basePath;
         try {

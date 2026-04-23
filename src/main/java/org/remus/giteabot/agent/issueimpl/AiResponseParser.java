@@ -5,7 +5,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.remus.giteabot.agent.model.FileChange;
 import org.remus.giteabot.agent.model.ImplementationPlan;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
@@ -50,6 +49,9 @@ public class AiResponseParser {
         }
 
         // Try to repair truncated JSON if necessary
+        // Truncate to first complete JSON object (handles duplicated responses)
+        jsonStr = truncateToFirstJsonObject(jsonStr);
+
         jsonStr = repairTruncatedJson(jsonStr);
 
         // Fix invalid JSON escape sequences (e.g. \<space> instead of \n)
@@ -64,44 +66,50 @@ public class AiResponseParser {
 
             // Check if AI is requesting more files
             List<String> requestFiles = response.getRequestFiles();
-            List<ImplementationPlan.ToolRequest> requestTools = response.getRequestTools() != null
-                    ? response.getRequestTools().stream()
-                    .filter(tool -> tool.getTool() != null && !tool.getTool().isBlank())
-                    .map(tool -> ImplementationPlan.ToolRequest.builder()
-                            .tool(tool.getTool())
-                            .args(tool.getArgs())
-                            .build())
-                    .toList()
-                    : List.of();
-
-            // Parse file changes if present
-            List<FileChange> fileChanges = new ArrayList<>();
-            if (response.getFileChanges() != null) {
-                fileChanges = response.getFileChanges().stream()
-                        .map(fc -> FileChange.builder()
-                                .path(fc.getPath())
-                                .content(fc.getContent() != null ? fc.getContent() : "")
-                                .diff(fc.getDiff())
-                                .operation(parseOperation(fc.getOperation()))
-                                .build())
-                        .toList();
+            // Parse context tool requests with auto-generated IDs
+            List<ImplementationPlan.ToolRequest> requestTools = List.of();
+            if (response.getRequestTools() != null) {
+                int idx = 1;
+                List<ImplementationPlan.ToolRequest> built = new ArrayList<>();
+                for (AiToolRequest tool : response.getRequestTools()) {
+                    if (tool.getTool() == null || tool.getTool().isBlank()) continue;
+                    String id = (tool.getId() != null && !tool.getId().isBlank())
+                            ? tool.getId() : "ctx-" + idx;
+                    built.add(ImplementationPlan.ToolRequest.builder()
+                            .id(id).tool(tool.getTool()).args(tool.getArgs()).build());
+                    idx++;
+                }
+                requestTools = built;
             }
 
-            // Parse tool request if present
-            ImplementationPlan.ToolRequest toolRequest = null;
-            if (response.getRunTool() != null && response.getRunTool().getTool() != null) {
-                toolRequest = ImplementationPlan.ToolRequest.builder()
-                        .tool(response.getRunTool().getTool())
-                        .args(response.getRunTool().getArgs())
-                        .build();
+            // Parse tool requests: prefer runTools array, fall back to single runTool
+            List<ImplementationPlan.ToolRequest> toolRequests = new ArrayList<>();
+            if (response.getRunTools() != null && !response.getRunTools().isEmpty()) {
+                int idx = 1;
+                for (AiToolRequest tr : response.getRunTools()) {
+                    if (tr.getTool() == null || tr.getTool().isBlank()) continue;
+                    String id = (tr.getId() != null && !tr.getId().isBlank())
+                            ? tr.getId() : "tool-" + idx;
+                    toolRequests.add(ImplementationPlan.ToolRequest.builder()
+                            .id(id).tool(tr.getTool()).args(tr.getArgs()).build());
+                    idx++;
+                }
+            } else if (response.getRunTool() != null && response.getRunTool().getTool() != null) {
+                String id = (response.getRunTool().getId() != null && !response.getRunTool().getId().isBlank())
+                        ? response.getRunTool().getId() : "tool-1";
+                toolRequests.add(ImplementationPlan.ToolRequest.builder()
+                        .id(id).tool(response.getRunTool().getTool()).args(response.getRunTool().getArgs()).build());
             }
+
+            // Legacy single toolRequest for backward compatibility (first entry)
+            ImplementationPlan.ToolRequest legacyToolRequest = toolRequests.isEmpty() ? null : toolRequests.getFirst();
 
             return ImplementationPlan.builder()
                     .summary(response.getSummary())
                     .requestFiles(requestFiles)
                     .requestTools(requestTools)
-                    .fileChanges(fileChanges)
-                    .toolRequest(toolRequest)
+                    .toolRequest(legacyToolRequest)
+                    .toolRequests(toolRequests.isEmpty() ? null : toolRequests)
                     .build();
         } catch (JacksonException e) {
             log.error("Failed to parse AI response as JSON: {}", e.getMessage());
@@ -133,6 +141,7 @@ public class AiResponseParser {
         // Try to extract JSON from response
         String jsonStr = extractJsonFromResponse(aiResponse);
         if (jsonStr != null) {
+            jsonStr = truncateToFirstJsonObject(jsonStr);
             try {
                 FileRequestResponse response = objectMapper.readValue(jsonStr, FileRequestResponse.class);
                 if (response != null && response.getRequestedFiles() != null) {
@@ -202,6 +211,52 @@ public class AiResponseParser {
     }
 
     /**
+     * Truncates the extracted JSON to the first complete top-level JSON object.
+     * Handles the case where the AI accidentally duplicates its response – the second
+     * copy would otherwise cause a {@code FAIL_ON_TRAILING_TOKENS} parse error.
+     * <p>
+     * Correctly handles strings (including escaped characters) so that {@code "}
+     * or {@code {}/{@code }} inside a string value do not affect brace counting.
+     *
+     * @param json The raw extracted JSON (may contain one or more complete objects)
+     * @return Substring up to and including the first closing {@code }}, or the
+     *         original string if no complete object is found
+     */
+    String truncateToFirstJsonObject(String json) {
+        if (json == null || json.isEmpty()) {
+            return json;
+        }
+        int braces = 0;
+        boolean inString = false;
+        boolean escaped = false;
+        for (int i = 0; i < json.length(); i++) {
+            char c = json.charAt(i);
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (c == '\\' && inString) {
+                escaped = true;
+                continue;
+            }
+            if (c == '"') {
+                inString = !inString;
+                continue;
+            }
+            if (!inString) {
+                if (c == '{') {
+                    braces++;
+                } else if (c == '}') {
+                    braces--;
+                    if (braces == 0) {
+                        return json.substring(0, i + 1);
+                    }
+                }
+            }
+        }
+        return json; // no complete object found – return as-is for repairTruncatedJson
+    }
+    /**
      * Extracts JSON from the AI response using multiple strategies.
      */
     String extractJsonFromResponse(String aiResponse) {
@@ -265,8 +320,8 @@ public class AiResponseParser {
             return json;
         }
 
-        // JSON is truncated - try to repair it by finding last complete fileChange
-        int lastCompleteObject = findLastCompleteFileChange(json);
+        // JSON is truncated - try to close the structures
+        int lastCompleteObject = findLastCompleteRunTool(json);
         if (lastCompleteObject > 0 && lastCompleteObject < json.length() - 10) {
             json = json.substring(0, lastCompleteObject);
 
@@ -324,13 +379,27 @@ public class AiResponseParser {
         if (json == null || json.isEmpty()) {
             return json;
         }
-        return json.replaceAll("\\\\([^\"\\\\bfnrtu/])", "\\\\\\\\$1");
+        // Match either a valid \\ (double backslash, keep as-is) or a single \ followed by
+        // an invalid JSON escape character (replace with \\).
+        // This prevents re-processing the second \ of an already-valid \\ sequence.
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "(\\\\\\\\)|\\\\([^\"\\\\bfnrtu/])");
+        java.util.regex.Matcher m = p.matcher(json);
+        return m.replaceAll(mr -> {
+            if (mr.group(1) != null) {
+                // Valid \\ sequence – keep unchanged
+                return java.util.regex.Matcher.quoteReplacement("\\\\");
+            } else {
+                // Invalid \x – escape to \\x
+                return java.util.regex.Matcher.quoteReplacement("\\\\" + mr.group(2));
+            }
+        });
     }
 
     /**
-     * Finds the position after the last complete fileChange object in the JSON.
+     * Finds the position after the last complete runTool object in the JSON.
      */
-    private int findLastCompleteFileChange(String json) {
+    private int findLastCompleteRunTool(String json) {
         int lastComplete = -1;
         int searchFrom = 0;
 
@@ -357,15 +426,6 @@ public class AiResponseParser {
         return lastComplete;
     }
 
-    private FileChange.Operation parseOperation(String operation) {
-        if (operation == null) return FileChange.Operation.CREATE;
-        return switch (operation.toUpperCase()) {
-            case "UPDATE" -> FileChange.Operation.UPDATE;
-            case "DELETE" -> FileChange.Operation.DELETE;
-            default -> FileChange.Operation.CREATE;
-        };
-    }
-
     // ---- Inner DTOs for AI response deserialization ----
 
     @Data
@@ -377,24 +437,16 @@ public class AiResponseParser {
         private List<String> requestFiles;
         @JsonAlias("requestedTools")
         private List<AiToolRequest> requestTools;
-        private List<AiFileChange> fileChanges;
         private AiToolRequest runTool;
+        private List<AiToolRequest> runTools;
     }
 
-    @Data
-    @NoArgsConstructor
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    static class AiFileChange {
-        private String path;
-        private String operation;
-        private String content;
-        private String diff;
-    }
 
     @Data
     @NoArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
     static class AiToolRequest {
+        private String id;
         private String tool;
         private List<String> args;
     }
