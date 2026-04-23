@@ -139,7 +139,7 @@ class UnifiedWebhookControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string("bot disabled"));
 
-        verify(giteaHandler, never()).handleWebhook(any(), any(), any());
+        verify(giteaHandler, never()).handleWebhook(any(), any());
     }
 
     @Test
