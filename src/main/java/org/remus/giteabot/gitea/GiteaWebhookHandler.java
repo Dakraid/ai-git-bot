@@ -177,7 +177,7 @@ public class GiteaWebhookHandler {
     /**
      * Routes a webhook event for a specific persisted bot through its own AI and Git integrations.
      */
-    private ResponseEntity<String> handleBotWebhookEvent(Bot bot, String xGiteaEventType, WebhookPayload payload) {
+    private ResponseEntity<String> handleBotWebhookEvent(Bot bot, WebhookPayload payload) {
         // Ignore events triggered by the bot itself
         if (botWebhookService.isBotUser(bot, payload)) {
             log.debug("Ignoring Gitea webhook event from bot's own user '{}'", bot.getUsername());
@@ -258,37 +258,8 @@ public class GiteaWebhookHandler {
             return ResponseEntity.ok("review triggered");
         }
 
-        // Handle review_requested action: triggered when the bot is added as a reviewer.
-        // Gitea sends X-Gitea-Event-Type: pull_request_review_request with action: review_requested.
-        if ("review_requested".equals(action) || "pull_request_review_request".equals(xGiteaEventType)) {
-            if (isRequestedReviewer(bot, payload)) {
-                log.debug("Bot '{}' was added as a reviewer for PR #{}, triggering review",
-                        bot.getUsername(), payload.getPullRequest().getNumber());
-                botWebhookService.reviewPullRequest(bot, payload);
-                return ResponseEntity.ok("review triggered");
-            }
-            log.debug("review_requested event but bot is not the requested reviewer, ignoring");
-            return ResponseEntity.ok("ignored");
-        }
-
         log.debug("Unhandled Gitea PR action '{}', ignoring", action);
         return ResponseEntity.ok("ignored");
-    }
-
-    /**
-     * Checks whether the bot itself is among the requested reviewers in a review_requested event.
-     * If no requested reviewers are present in the payload, defaults to true so the bot reviews
-     * the PR regardless.
-     */
-    @SuppressWarnings("unchecked")
-    private boolean isRequestedReviewer(Bot bot, WebhookPayload payload) {
-        if (bot.getUsername() == null || bot.getUsername().isBlank()) {
-            return false;
-        }
-        // The requested_reviewer field is at the top level of the Gitea payload for review_requested
-        // We rely on the sender check being already done; here we allow the review if no specific
-        // reviewer info is present (payload may not always include requested_reviewers list).
-        return true;
     }
 }
 
