@@ -51,7 +51,7 @@ class UnifiedWebhookControllerTest {
     void handleWebhook_giteaBot_delegatesToGiteaHandler() throws Exception {
         Bot bot = createTestBot(RepositoryType.GITEA);
         when(botService.findByWebhookSecret("test-secret")).thenReturn(Optional.of(bot));
-        when(giteaHandler.handleWebhook(eq(bot), any(), any())).thenReturn(ResponseEntity.ok("review triggered"));
+        when(giteaHandler.handleWebhook(eq(bot), any())).thenReturn(ResponseEntity.ok("review triggered"));
 
         mockMvc.perform(post("/api/webhook/test-secret")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -59,26 +59,9 @@ class UnifiedWebhookControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string("review triggered"));
 
-        verify(giteaHandler).handleWebhook(eq(bot), any(), any(Map.class));
+        verify(giteaHandler).handleWebhook(eq(bot), any(Map.class));
         verify(gitHubHandler, never()).handleWebhook(any(), any(), any());
         verify(bitbucketHandler, never()).handleWebhook(any(), any(), any());
-    }
-
-    @Test
-    void handleWebhook_giteaBot_reviewRequestedEvent_delegatesToGiteaHandler() throws Exception {
-        Bot bot = createTestBot(RepositoryType.GITEA);
-        when(botService.findByWebhookSecret("test-secret")).thenReturn(Optional.of(bot));
-        when(giteaHandler.handleWebhook(eq(bot), eq("pull_request_review_request"), any()))
-                .thenReturn(ResponseEntity.ok("review triggered"));
-
-        mockMvc.perform(post("/api/webhook/test-secret")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .header("X-Gitea-Event-Type", "pull_request_review_request")
-                        .content("{\"action\":\"review_requested\",\"pull_request\":{\"number\":1}}"))
-                .andExpect(status().isOk())
-                .andExpect(content().string("review triggered"));
-
-        verify(giteaHandler).handleWebhook(eq(bot), eq("pull_request_review_request"), any(Map.class));
     }
 
     @Test
