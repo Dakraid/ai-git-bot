@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.*;
@@ -37,14 +38,13 @@ class IssueImplementationServiceTest {
     @Mock private ToolExecutionService toolExecutionService;
     @Mock private WorkspaceService workspaceService;
 
-    private AgentConfigProperties agentConfig;
     private IssueImplementationService service;
 
     private static final Path FAKE_WORKSPACE = Path.of("/tmp/test-workspace");
 
     @BeforeEach
     void setUp() {
-        agentConfig = new AgentConfigProperties();
+        AgentConfigProperties agentConfig = new AgentConfigProperties();
         agentConfig.setEnabled(true);
         agentConfig.setMaxFiles(10);
         agentConfig.setBranchPrefix("ai-agent/");
@@ -57,7 +57,7 @@ class IssueImplementationServiceTest {
         lenient().when(toolExecutionService.getAvailableContextTools()).thenReturn(List.of("branch-switcher", "rg", "cat", "find", "tree"));
         // isValidationTool is the authoritative check for validation tools; delegate to getAvailableTools()
         lenient().when(toolExecutionService.isValidationTool(anyString()))
-                .thenAnswer(inv -> List.of("mvn").contains(inv.getArgument(0)));
+                .thenAnswer(inv -> Objects.equals("mvn", inv.getArgument(0)));
     }
 
     // ---- handleIssueAssigned tests ----
