@@ -2,6 +2,8 @@ package org.remus.giteabot.agent.issueimpl;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.remus.giteabot.agent.model.ImplementationPlan;
+import org.remus.giteabot.agent.validation.ToolResult;
 
 import java.util.List;
 import java.util.Map;
@@ -83,30 +85,64 @@ class AgentPromptBuilderTest {
     }
 
     @Test
-    void buildDiffFailureFeedback_emptyList_returnsEmpty() {
-        assertThat(builder.buildDiffFailureFeedback(null)).isEmpty();
-        assertThat(builder.buildDiffFailureFeedback(List.of())).isEmpty();
-    }
-
-    @Test
-    void buildDiffFailureFeedback_withPaths_includesPaths() {
-        String result = builder.buildDiffFailureFeedback(List.of("src/Foo.java", "src/Bar.java"));
-
-        assertThat(result).contains("src/Foo.java");
-        assertThat(result).contains("src/Bar.java");
-        assertThat(result).contains("complete file content");
-    }
-
-    @Test
     void buildMissingToolFeedback_containsInstructions() {
         String result = builder.buildMissingToolFeedback();
 
-        assertThat(result).contains("Missing Validation Tool");
-        assertThat(result).contains("runTool");
+        assertThat(result).contains("Missing Tool Requests");
+        assertThat(result).contains("runTools");
+        assertThat(result).contains("write-file");
+    }
+
+    // ---- buildMultiToolFeedback tests ----
+
+    @Test
+    void buildMultiToolFeedback_singleSuccessfulTool_containsIdAndSuccess() {
+        ImplementationPlan.ToolRequest req = ImplementationPlan.ToolRequest.builder()
+                .id("build").tool("mvn").args(List.of("compile", "-q")).build();
+        ToolResult result = new ToolResult(true, 0, "BUILD SUCCESS", "");
+
+        String feedback = builder.buildMultiToolFeedback(List.of(req), List.of(result));
+
+        assertThat(feedback).contains("Result for `build`");
+        assertThat(feedback).contains("mvn compile -q");
+        assertThat(feedback).contains("Success");
+        assertThat(feedback).doesNotContain("Fix the errors");
     }
 
     @Test
-    void buildPreviousChangesInfo_nullPlan_returnsEmpty() {
-        assertThat(builder.buildPreviousChangesInfo(null)).isEmpty();
+    void buildMultiToolFeedback_twoToolsOneFailed_indicatesFailure() {
+        ImplementationPlan.ToolRequest req1 = ImplementationPlan.ToolRequest.builder()
+                .id("build").tool("mvn").args(List.of("compile")).build();
+        ImplementationPlan.ToolRequest req2 = ImplementationPlan.ToolRequest.builder()
+                .id("test").tool("mvn").args(List.of("test")).build();
+        ToolResult ok = new ToolResult(true, 0, "OK", "");
+        ToolResult fail = new ToolResult(false, 1, "FAILED", "");
+
+        String feedback = builder.buildMultiToolFeedback(List.of(req1, req2), List.of(ok, fail));
+
+        assertThat(feedback).contains("Result for `build`");
+        assertThat(feedback).contains("Result for `test`");
+        assertThat(feedback).contains("Success");
+        assertThat(feedback).contains("Failed");
+        assertThat(feedback).contains("Fix the errors");
+        assertThat(feedback).contains("runTools");
+    }
+
+    @Test
+    void buildMultiToolFeedback_emptyList_returnsEmpty() {
+        assertThat(builder.buildMultiToolFeedback(null, List.of())).isEmpty();
+        assertThat(builder.buildMultiToolFeedback(List.of(), List.of())).isEmpty();
+    }
+
+    @Test
+    void buildToolFeedback_delegatesToMultiTool() {
+        ImplementationPlan.ToolRequest req = ImplementationPlan.ToolRequest.builder()
+                .id("b").tool("gradle").args(List.of("build")).build();
+        ToolResult result = new ToolResult(false, 1, "error output", "");
+
+        String single = builder.buildToolFeedback(req, result);
+        String multi = builder.buildMultiToolFeedback(List.of(req), List.of(result));
+
+        assertThat(single).isEqualTo(multi);
     }
 }

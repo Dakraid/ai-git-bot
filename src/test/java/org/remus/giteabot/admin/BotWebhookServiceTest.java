@@ -6,7 +6,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.remus.giteabot.agent.DiffApplyService;
 import org.remus.giteabot.agent.session.AgentSession;
 import org.remus.giteabot.agent.session.AgentSessionService;
 import org.remus.giteabot.agent.validation.ToolExecutionService;
@@ -18,12 +17,19 @@ import org.remus.giteabot.gitea.model.WebhookPayload;
 import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.session.SessionService;
 
-import java.util.List;
 import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class BotWebhookServiceTest {
@@ -36,7 +42,6 @@ class BotWebhookServiceTest {
     @Mock private AgentSessionService agentSessionService;
     @Mock private ToolExecutionService toolExecutionService;
     @Mock private WorkspaceService workspaceService;
-    @Mock private DiffApplyService diffApplyService;
     @Mock private BotService botService;
     @Mock private RepositoryApiClient repositoryApiClient;
 
@@ -46,7 +51,7 @@ class BotWebhookServiceTest {
     void setUp() {
         botWebhookService = new BotWebhookService(aiClientFactory, giteaClientFactory,
                 promptService, sessionService, agentConfig, new ReviewConfigProperties(),
-                agentSessionService, toolExecutionService, workspaceService, diffApplyService, botService);
+                agentSessionService, toolExecutionService, workspaceService, botService);
     }
 
     // ---- isBotUser tests ----
@@ -132,12 +137,18 @@ class BotWebhookServiceTest {
             when(aiClientFactory.getClient(any())).thenReturn(null); // not reached in these tests
         }
 
+        /** For tests where the agent path is taken, stub workspace to fail quickly. */
+        private void stubAgentPath(AgentSession session) {
+            lenient().when(workspaceService.prepareWorkspace(any(), any(), any(), any(), any()))
+                    .thenReturn(org.remus.giteabot.agent.validation.WorkspaceResult.failure("routing test"));
+        }
+
         @Test
         void agentSessionFoundByIssueNumber_agentEnabled_routesToAgent() {
             AgentSession session = agentSession(OWNER, REPO, PR_NUMBER);
             when(agentSessionService.getSessionByIssue(OWNER, REPO, PR_NUMBER))
                     .thenReturn(Optional.of(session));
-            when(agentSessionService.toAiMessages(any())).thenReturn(List.of());
+            stubAgentPath(session);
 
             botWebhookService.handlePrComment(createBot("bot", "claude_bot", true), prCommentPayload);
 
@@ -156,7 +167,7 @@ class BotWebhookServiceTest {
             AgentSession session = agentSession(OWNER, REPO, PR_NUMBER);
             when(agentSessionService.getSessionByPr(OWNER, REPO, PR_NUMBER))
                     .thenReturn(Optional.of(session));
-            when(agentSessionService.toAiMessages(any())).thenReturn(List.of());
+            stubAgentPath(session);
 
             botWebhookService.handlePrComment(createBot("bot", "claude_bot", true), prCommentPayload);
 
@@ -215,7 +226,7 @@ class BotWebhookServiceTest {
             AgentSession session = agentSession(OWNER, REPO, PR_NUMBER);
             when(agentSessionService.getSessionByIssue(OWNER, REPO, PR_NUMBER))
                     .thenReturn(Optional.of(session));
-            when(agentSessionService.toAiMessages(any())).thenReturn(List.of());
+            stubAgentPath(session);
 
             botWebhookService.handlePrComment(createBot("bot", "claude_bot", true), prCommentPayload);
 

@@ -26,19 +26,21 @@ public class ImplementationPlan {
     private List<ToolRequest> requestTools;
 
     /**
-     * List of file changes to implement.
-     */
-    private List<FileChange> fileChanges;
-
-    /**
-     * Branch name to be created for the implementation.
+     * Branch name suggested by the AI (informational only).
      */
     private String branchName;
 
     /**
-     * Tool the AI wants to run for validation.
+     * Single tool the AI wants to run for validation (kept for backward compatibility).
+     * Prefer {@link #toolRequests} for new code.
      */
     private ToolRequest toolRequest;
+
+    /**
+     * List of tools the AI wants to run (file modifications, context exploration and/or validation).
+     * Takes precedence over the single {@link #toolRequest} field when non-empty.
+     */
+    private List<ToolRequest> toolRequests;
 
     /**
      * Returns true if the AI is requesting additional files.
@@ -61,23 +63,36 @@ public class ImplementationPlan {
         return hasFileRequests() || hasContextToolRequests();
     }
 
+
     /**
-     * Returns true if there are actual file changes to apply.
+     * Returns true if the AI wants to run at least one tool.
      */
-    public boolean hasFileChanges() {
-        return fileChanges != null && !fileChanges.isEmpty();
+    public boolean hasToolRequest() {
+        return !getEffectiveToolRequests().isEmpty();
     }
 
     /**
-     * Returns true if the AI wants to run a validation tool.
+     * Returns the effective list of tool requests, merging {@link #toolRequests} and the
+     * legacy {@link #toolRequest} field for backward compatibility.
+     * {@link #toolRequests} takes precedence when non-empty.
      */
-    public boolean hasToolRequest() {
-        return toolRequest != null && toolRequest.getTool() != null && !toolRequest.getTool().isBlank();
+    public List<ToolRequest> getEffectiveToolRequests() {
+        if (toolRequests != null && !toolRequests.isEmpty()) {
+            return toolRequests;
+        }
+        if (toolRequest != null && toolRequest.getTool() != null && !toolRequest.getTool().isBlank()) {
+            return List.of(toolRequest);
+        }
+        return List.of();
     }
 
     @Data
     @Builder
     public static class ToolRequest {
+        /**
+         * Stable identifier set by the AI to correlate results back to requests.
+         */
+        private String id;
         private String tool;
         private List<String> args;
     }

@@ -1,6 +1,5 @@
 package org.remus.giteabot.agent.issueimpl;
 
-import org.remus.giteabot.agent.model.FileChange;
 import org.remus.giteabot.agent.model.ImplementationPlan;
 import org.remus.giteabot.agent.validation.ToolResult;
 
@@ -32,7 +31,7 @@ public class AgentPromptBuilder {
                 {
                   "summary": "Need more context",
                   "requestFiles": ["path/file1", "path/file2"],
-                  "requestTools": [{"tool": "rg", "args": ["UserService.save", "src"]}]
+                  "requestTools": [{"id": "a6f3c1d2-7e84-4b0a-9f12-e5d8c3a10001", "tool": "rg", "args": ["UserService.save", "src"]}]
                 }
                 ```
                 You may request max 20 files and up to 5 repository tools.
@@ -63,7 +62,8 @@ public class AgentPromptBuilder {
                 %s
                 
                 If you still need more repository context, you may request additional `requestFiles` or `requestTools`.
-                Otherwise implement the issue. Output JSON per system prompt format.
+                Otherwise implement the issue via `runTools`. Use `write-file` / `patch-file` to apply changes,
+                then include a validation tool (e.g. `mvn compile`). Output JSON per system prompt format.
                 """, issueTitle, issueBody != null ? issueBody : "(none)", treeContext, fileContext);
     }
 
@@ -99,98 +99,84 @@ public class AgentPromptBuilder {
     }
 
     /**
-     * Builds the feedback message sent to the AI after a tool execution.
+     * Builds the feedback message sent to the AI after a single tool execution.
+     * Delegates to {@link #buildMultiToolFeedback(List, List)} for consistency.
      */
     public String buildToolFeedback(ImplementationPlan.ToolRequest toolRequest, ToolResult result) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("## Tool Execution Result\n\n");
-        sb.append("**Command**: `").append(toolRequest.getTool());
-        if (toolRequest.getArgs() != null && !toolRequest.getArgs().isEmpty()) {
-            sb.append(" ").append(String.join(" ", toolRequest.getArgs()));
-        }
-        sb.append("`\n\n");
-
-        if (result.success()) {
-            sb.append("✅ **Success** (exit code 0)\n");
-        } else {
-            sb.append("❌ **Failed** (exit code ").append(result.exitCode()).append(")\n");
-        }
-
-        sb.append("\n").append(result.formatForAi());
-
-        if (!result.success()) {
-            sb.append("\nFix the errors and provide updated `fileChanges`. ");
-            sb.append("Include `runTool` to validate again.");
-        }
-
-        return sb.toString();
+        return buildMultiToolFeedback(List.of(toolRequest), List.of(result));
     }
 
     /**
-     * Builds feedback for the AI about files where diff application failed.
-     * Instructs the AI to provide the complete file content instead of a diff.
+     * Builds a combined feedback message for multiple tool executions, keyed by each tool's ID.
+     *
+     * @param toolRequests Ordered list of tool requests
+     * @param results      Corresponding results in the same order
+     * @return Feedback message for the AI
      */
-    public String buildDiffFailureFeedback(List<String> failedDiffPaths) {
-        if (failedDiffPaths == null || failedDiffPaths.isEmpty()) {
+    public String buildMultiToolFeedback(List<ImplementationPlan.ToolRequest> toolRequests,
+                                          List<ToolResult> results) {
+        if (toolRequests == null || toolRequests.isEmpty()) {
             return "";
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("\n\n## ⚠️ Diff Application Failed\n\n");
-        sb.append("The following file(s) could not be updated because the diff did not match the current file content:\n\n");
-        for (String path : failedDiffPaths) {
-            sb.append("- `").append(path).append("`\n");
+        sb.append("## Tool Execution Results\n\n");
+
+        boolean anyFailed = false;
+        for (int i = 0; i < toolRequests.size(); i++) {
+            ImplementationPlan.ToolRequest req = toolRequests.get(i);
+            ToolResult result = i < results.size() ? results.get(i) : null;
+
+            String id = (req.getId() != null && !req.getId().isBlank()) ? req.getId() : ("tool-" + (i + 1));
+            sb.append("### Result for `").append(id).append("`: `").append(req.getTool());
+            if (req.getArgs() != null && !req.getArgs().isEmpty()) {
+                sb.append(" ").append(String.join(" ", req.getArgs()));
+            }
+            sb.append("`\n\n");
+
+            if (result == null) {
+                sb.append("⚠️ No result available.\n\n");
+            } else if (result.success()) {
+                sb.append("✅ **Success** (exit code 0)\n\n");
+                sb.append(result.formatForAi()).append("\n\n");
+            } else {
+                sb.append("❌ **Failed** (exit code ").append(result.exitCode()).append(")\n\n");
+                sb.append(result.formatForAi()).append("\n\n");
+                anyFailed = true;
+            }
         }
-        sb.append("\n**IMPORTANT**: For these files, do NOT use a diff. Instead, provide the **complete file content** ");
-        sb.append("in the `content` field of the `fileChanges` entry (and omit the `diff` field). ");
-        sb.append("This ensures the changes are applied correctly.\n");
+
+        if (anyFailed) {
+            sb.append("Fix the errors using `write-file` or `patch-file` tools in `runTools`. ");
+            sb.append("Include validation tools again to confirm the fix.");
+        }
+
         return sb.toString();
     }
 
     /**
-     * Builds the feedback message when the AI provided file changes without a validation tool.
+     * Builds the feedback message when the AI provided no runTools.
      */
     public String buildMissingToolFeedback() {
         return """
-                ## Missing Validation Tool
+                ## Missing Tool Requests
                 
-                Your response included `fileChanges` but no `runTool` for validation.
+                Your response did not include any `runTools`. All file changes and validation \
+                must be performed via tool requests.
                 
-                **Validation is mandatory.** Please provide the same file changes again, \
-                but this time include a `runTool` to validate the code.
+                **Please provide a response with `runTools`** that:
+                1. Write/modify files using `write-file` or `patch-file`
+                2. Validate the changes using a build/test tool
                 
-                Detect the build system from the file tree and request the appropriate tool:
-                - Maven: `{"tool": "mvn", "args": ["compile", "-q", "-B"]}`
-                - Gradle: `{"tool": "gradle", "args": ["compileJava", "-q"]}`
-                - npm: `{"tool": "npm", "args": ["run", "build"]}`
-                - etc.
+                Example:
+                ```json
+                "runTools": [
+                  {"id": "a6f3c1d2-7e84-4b0a-9f12-e5d8c3a10001", "tool": "write-file", "args": ["src/Foo.java", "...content..."]},
+                  {"id": "a6f3c1d2-7e84-4b0a-9f12-e5d8c3a10002", "tool": "mvn", "args": ["compile", "-q", "-B"]}
+                ]
+                ```
                 
-                Output JSON with both `fileChanges` and `runTool`.""";
-    }
-
-    /**
-     * Builds information about previously made changes that need to be preserved.
-     * This is used when a tool fails to ensure the AI includes all previous changes
-     * when providing fixes.
-     */
-    public String buildPreviousChangesInfo(ImplementationPlan lastValidPlan) {
-        if (lastValidPlan == null || !lastValidPlan.hasFileChanges()) {
-            return "";
-        }
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("\n\n## IMPORTANT: Preserve Previous Changes\n\n");
-        sb.append("Your previous response included the following file changes that need to be preserved.\n");
-        sb.append("When you fix the errors, you MUST include ALL these changes in your response, ");
-        sb.append("not just the fix. If you omit any of these files, those changes will be lost.\n\n");
-        sb.append("**Files from your previous response** (").append(lastValidPlan.getFileChanges().size()).append("):\n");
-
-        for (FileChange fc : lastValidPlan.getFileChanges()) {
-            sb.append("- `").append(fc.getPath()).append("` (").append(fc.getOperation()).append(")\n");
-        }
-
-        sb.append("\nInclude all these files in your `fileChanges` array, updating any that need fixes.\n");
-
-        return sb.toString();
+                Available file tools: `write-file`, `patch-file`, `mkdir`, `delete-file`
+                Available build tools (configured by admin): see system prompt.""";
     }
 
     /**
@@ -200,10 +186,8 @@ public class AgentPromptBuilder {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("Fixes #%d%n%n", issueNumber));
         sb.append("## Summary\n\n");
-        sb.append(plan.getSummary()).append("\n\n");
-        sb.append("## Changes\n\n");
-        for (FileChange fc : plan.getFileChanges()) {
-            sb.append(String.format("- **%s**: `%s`%n", fc.getOperation(), fc.getPath()));
+        if (plan.getSummary() != null && !plan.getSummary().isBlank()) {
+            sb.append(plan.getSummary()).append("\n\n");
         }
         sb.append("\n---\n");
         sb.append("*This PR was automatically generated by the AI implementation agent. Please review carefully before merging.*\n");

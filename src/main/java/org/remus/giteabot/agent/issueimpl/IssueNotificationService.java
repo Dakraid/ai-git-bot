@@ -1,12 +1,12 @@
 package org.remus.giteabot.agent.issueimpl;
 
 import lombok.extern.slf4j.Slf4j;
-import org.remus.giteabot.agent.model.FileChange;
 import org.remus.giteabot.agent.model.ImplementationPlan;
+import org.remus.giteabot.agent.validation.ToolExecutionService;
 import org.remus.giteabot.agent.validation.ToolResult;
 import org.remus.giteabot.repository.RepositoryApiClient;
 
-import java.util.stream.Collectors;
+import java.util.List;
 
 /**
  * Posts progress, thinking, and tool-result comments on issues
@@ -15,13 +15,19 @@ import java.util.stream.Collectors;
 @Slf4j
 public class IssueNotificationService {
 
+    /** Maximum number of characters shown per tool argument in comments. */
+    private static final int MAX_ARG_DISPLAY_CHARS = 80;
+
     private final RepositoryApiClient repositoryClient;
     private final AiResponseParser responseParser;
+    private final ToolExecutionService toolExecutionService;
 
     public IssueNotificationService(RepositoryApiClient repositoryClient,
-                                     AiResponseParser responseParser) {
+                                     AiResponseParser responseParser,
+                                     ToolExecutionService toolExecutionService) {
         this.repositoryClient = repositoryClient;
         this.responseParser = responseParser;
+        this.toolExecutionService = toolExecutionService;
     }
 
     /**
@@ -66,32 +72,27 @@ public class IssueNotificationService {
         if (plan != null && plan.hasContextToolRequests()) {
             comment.append("🔎 **Requesting repository tools**:\n");
             for (ImplementationPlan.ToolRequest toolReq : plan.getRequestTools()) {
-                comment.append("- `").append(toolReq.getTool());
-                if (toolReq.getArgs() != null && !toolReq.getArgs().isEmpty()) {
-                    comment.append(" ").append(String.join(" ", toolReq.getArgs()));
-                }
-                comment.append("`\n");
+                appendToolRequestLine(comment, toolReq);
             }
             comment.append("\n");
         }
 
-        // Add file changes info if present
-        if (plan != null && plan.hasFileChanges()) {
-            comment.append("📄 **Planned file changes** (").append(plan.getFileChanges().size()).append("):\n");
-            for (FileChange fc : plan.getFileChanges()) {
-                comment.append("- `").append(fc.getPath()).append("` (").append(fc.getOperation()).append(")\n");
-            }
-            comment.append("\n");
-        }
 
-        // Add tool request info if present
+        // Only show non-silent (validation) tools in the "Will run" section.
+        // File tools (write-file, patch-file, mkdir, delete-file) and context tools
+        // are silent and must NOT appear here – their args may contain large file content.
         if (plan != null && plan.hasToolRequest()) {
-            ImplementationPlan.ToolRequest toolReq = plan.getToolRequest();
-            comment.append("🔧 **Will run**: `").append(toolReq.getTool());
-            if (toolReq.getArgs() != null && !toolReq.getArgs().isEmpty()) {
-                comment.append(" ").append(String.join(" ", toolReq.getArgs()));
+            List<ImplementationPlan.ToolRequest> validationTools = plan.getEffectiveToolRequests()
+                    .stream()
+                    .filter(r -> !toolExecutionService.isSilentTool(r.getTool()))
+                    .toList();
+            if (!validationTools.isEmpty()) {
+                comment.append("🔧 **Will run** (").append(validationTools.size()).append("):\n");
+                for (ImplementationPlan.ToolRequest toolReq : validationTools) {
+                    appendToolRequestLine(comment, toolReq);
+                }
+                comment.append("\n");
             }
-            comment.append("`\n");
         }
 
         // Only post if we have content
@@ -108,14 +109,17 @@ public class IssueNotificationService {
     }
 
     /**
-     * Posts the result of a tool execution as a comment on the issue.
+     * Posts the result of a single tool execution as a comment on the issue.
+     * Should only be called for non-context (validation) tools.
      */
     public void postToolResultComment(String owner, String repo, Long issueNumber,
                                        ImplementationPlan.ToolRequest toolRequest,
                                        ToolResult result) {
         try {
             StringBuilder comment = new StringBuilder();
-            comment.append("🔧 **Tool Execution**: `").append(toolRequest.getTool());
+            String id = toolRequest.getId() != null && !toolRequest.getId().isBlank()
+                    ? " `[" + toolRequest.getId() + "]`" : "";
+            comment.append("🔧 **Tool Execution**").append(id).append(": `").append(toolRequest.getTool());
             if (toolRequest.getArgs() != null && !toolRequest.getArgs().isEmpty()) {
                 comment.append(" ").append(String.join(" ", toolRequest.getArgs()));
             }
@@ -146,21 +150,16 @@ public class IssueNotificationService {
     public void postSuccessComment(String owner, String repo, Long issueNumber,
                                     ImplementationPlan plan, Long prNumber) {
         String prRef = repositoryClient.formatPullRequestReference(prNumber);
+        String summary = (plan != null && plan.getSummary() != null) ? plan.getSummary() : "(no summary)";
         String successComment = String.format(
                 """
                         🤖 **AI Agent**: Implementation complete! I've created %s with the following changes:
                         
                         **Summary**: %s
                         
-                        **Files changed** (%d):
-                        %s
-                        
                         Please review the changes carefully. If you need modifications, mention me in a comment \
                         on this issue and I'll continue working on it.""",
-                prRef, plan.getSummary(), plan.getFileChanges().size(),
-                plan.getFileChanges().stream()
-                        .map(fc -> String.format("- `%s` (%s)", fc.getPath(), fc.getOperation()))
-                        .collect(Collectors.joining("\n")));
+                prRef, summary);
 
         repositoryClient.postComment(owner, repo, issueNumber, successComment);
     }
@@ -171,22 +170,32 @@ public class IssueNotificationService {
     public void postFollowUpSuccessComment(String owner, String repo, Long issueNumber,
                                             ImplementationPlan plan, Long prNumber) {
         String prRef = repositoryClient.formatPullRequestReference(prNumber);
+        String summary = (plan != null && plan.getSummary() != null) ? plan.getSummary() : "(no summary)";
         String updateComment = String.format(
                 """
-                        🤖 **AI Agent**: I've made the following additional changes:
+                        🤖 **AI Agent**: I've made additional changes and pushed them to %s.
                         
-                        **Summary**: %s
-                        
-                        **Files changed** (%d):
-                        %s
-                        
-                        The changes have been pushed to %s.""",
-                plan.getSummary(), plan.getFileChanges().size(),
-                plan.getFileChanges().stream()
-                        .map(fc -> String.format("- `%s` (%s)", fc.getPath(), fc.getOperation()))
-                        .collect(Collectors.joining("\n")),
-                prRef);
+                        **Summary**: %s""",
+                prRef, summary);
 
         repositoryClient.postComment(owner, repo, issueNumber, updateComment);
+    }
+
+    // ---- Helpers ----
+
+    private void appendToolRequestLine(StringBuilder comment, ImplementationPlan.ToolRequest toolReq) {
+        String id = (toolReq.getId() != null && !toolReq.getId().isBlank())
+                ? "[" + toolReq.getId() + "] " : "";
+        comment.append("- ").append(id).append("`").append(toolReq.getTool());
+        if (toolReq.getArgs() != null && !toolReq.getArgs().isEmpty()) {
+            comment.append(" ");
+            // Truncate individual args to avoid dumping large content in comments
+            comment.append(toolReq.getArgs().stream()
+                    .map(a -> a.length() > MAX_ARG_DISPLAY_CHARS
+                            ? a.substring(0, MAX_ARG_DISPLAY_CHARS) + "…" : a)
+                    .reduce((a, b) -> a + " " + b)
+                    .orElse(""));
+        }
+        comment.append("`\n");
     }
 }
