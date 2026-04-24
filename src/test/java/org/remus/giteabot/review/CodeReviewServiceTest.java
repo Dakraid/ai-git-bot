@@ -9,12 +9,10 @@ import org.remus.giteabot.ai.AiClient;
 import org.remus.giteabot.ai.AiMessage;
 import org.remus.giteabot.config.PromptService;
 import org.remus.giteabot.config.ReviewConfigProperties;
-import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.gitea.model.GiteaReview;
 import org.remus.giteabot.gitea.model.GiteaReviewComment;
-import org.remus.giteabot.repository.model.Review;
-import org.remus.giteabot.repository.model.ReviewComment;
 import org.remus.giteabot.gitea.model.WebhookPayload;
+import org.remus.giteabot.repository.RepositoryApiClient;
 import org.remus.giteabot.session.ReviewSession;
 import org.remus.giteabot.session.SessionService;
 
@@ -178,7 +176,7 @@ class CodeReviewServiceTest {
         String result = codeReviewService.formatReviewComment("some review text");
         assertTrue(result.contains("🤖 AI Code Review"));
         assertTrue(result.contains("some review text"));
-        assertTrue(result.contains("Automated review by AI Gitea Bot"));
+        assertTrue(result.contains("Automated review by AI Git Bot"));
     }
 
     @Test
@@ -186,7 +184,7 @@ class CodeReviewServiceTest {
         String result = codeReviewService.formatBotResponse("some response");
         assertTrue(result.contains("🤖 Bot Response"));
         assertTrue(result.contains("some response"));
-        assertTrue(result.contains("Response by AI Gitea Bot"));
+        assertTrue(result.contains("Response by AI Git Bot"));
     }
 
     @Test

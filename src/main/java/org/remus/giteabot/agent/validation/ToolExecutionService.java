@@ -215,8 +215,8 @@ public class ToolExecutionService {
             return new ToolResult(false, -1, "",
                     "patch-file requires three arguments: <path> <search-text> <replacement-text>");
         }
-        String relativePath  = arguments.get(0);
-        String searchText    = arguments.get(1);
+        String relativePath    = arguments.get(0);
+        String searchText      = arguments.get(1);
         String replacementText = arguments.get(2);
         Path filePath;
         try {
@@ -232,7 +232,17 @@ public class ToolExecutionService {
             if (!originalContent.contains(searchText)) {
                 return new ToolResult(false, 1, "",
                         "patch-file: search text not found in file: " + relativePath
-                                + ". Use `cat` to inspect the exact content first.");
+                                + ". Use `cat` to inspect the exact current content first.");
+            }
+            // Count occurrences to detect ambiguous patches — replacing >1 occurrence is
+            // almost always a mistake (e.g. duplicated method signatures, repeated imports).
+            int occurrences = countOccurrences(originalContent, searchText);
+            if (occurrences > 1) {
+                return new ToolResult(false, 1, "",
+                        "patch-file: search text matches " + occurrences + " locations in "
+                                + relativePath + " — the replacement would be ambiguous. "
+                                + "Provide a more specific search string that matches exactly once "
+                                + "(use `cat` to identify a unique surrounding context).");
             }
             String newContent = originalContent.replace(searchText, replacementText);
             Files.writeString(filePath, newContent, StandardCharsets.UTF_8);
@@ -241,6 +251,17 @@ public class ToolExecutionService {
         } catch (IOException e) {
             return new ToolResult(false, -1, "", "patch-file failed: " + e.getMessage());
         }
+    }
+
+    /** Counts the number of non-overlapping occurrences of {@code needle} in {@code haystack}. */
+    private int countOccurrences(String haystack, String needle) {
+        int count = 0;
+        int idx   = 0;
+        while ((idx = haystack.indexOf(needle, idx)) != -1) {
+            count++;
+            idx += needle.length();
+        }
+        return count;
     }
 
     private ToolResult executeMkdirTool(Path workspaceDir, List<String> arguments) {
@@ -276,9 +297,16 @@ public class ToolExecutionService {
         }
         try {
             boolean deleted = Files.deleteIfExists(filePath);
-            String msg = deleted ? "File deleted: " + relativePath : "File did not exist: " + relativePath;
-            log.info("delete-file: {}", msg);
-            return new ToolResult(true, 0, msg, "");
+            if (deleted) {
+                log.info("delete-file: deleted {}", relativePath);
+                return new ToolResult(true, 0, "File deleted: " + relativePath, "");
+            } else {
+                // Return a visible warning so the AI notices a potential path typo.
+                log.warn("delete-file: file did not exist: {}", relativePath);
+                return new ToolResult(true, 1,
+                        "Warning: file did not exist, nothing was deleted — verify the path: "
+                                + relativePath, "");
+            }
         } catch (IOException e) {
             return new ToolResult(false, -1, "", "delete-file failed: " + e.getMessage());
         }
@@ -571,11 +599,21 @@ public class ToolExecutionService {
     }
 
     private Path resolveWorkspacePath(Path workspaceDir, String relativePath) throws IOException {
-        Path resolved = workspaceDir.resolve(relativePath).normalize();
-        if (!resolved.startsWith(workspaceDir.normalize())) {
+        // Stage 1: normalize() resolves any ".." segments without touching the filesystem.
+        Path normalized = workspaceDir.resolve(relativePath).normalize();
+        if (!normalized.startsWith(workspaceDir.normalize())) {
             throw new IOException("Path escapes workspace: " + relativePath);
         }
-        return resolved;
+        // Stage 2: if the target already exists, re-check after symlink resolution so that
+        // a symlink inside the workspace pointing outside is also caught.
+        if (Files.exists(normalized)) {
+            Path realBase = workspaceDir.toRealPath();
+            Path realPath = normalized.toRealPath();
+            if (!realPath.startsWith(realBase)) {
+                throw new IOException("Path escapes workspace via symlink: " + relativePath);
+            }
+        }
+        return normalized;
     }
 
     private ToolResult executeCommand(Path workspaceDir, String[] command) {

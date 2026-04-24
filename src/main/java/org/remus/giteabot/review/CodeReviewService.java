@@ -454,12 +454,12 @@ public class CodeReviewService {
 
     String formatReviewComment(String review) {
         return "## 🤖 AI Code Review\n\n" + review +
-                "\n\n---\n*Automated review by AI Gitea Bot*";
+                "\n\n---\n*Automated review by AI Git Bot*";
     }
 
     String formatBotResponse(String response) {
         return "## 🤖 Bot Response\n\n" + response +
-                "\n\n---\n*Response by AI Gitea Bot*";
+                "\n\n---\n*Response by AI Git Bot*";
     }
 
     private String buildPrSummaryMessage(String prTitle, String prBody) {
