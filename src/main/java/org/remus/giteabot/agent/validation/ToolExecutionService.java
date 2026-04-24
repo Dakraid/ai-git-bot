@@ -169,13 +169,14 @@ public class ToolExecutionService {
             return new ToolResult(false, -1, "", "branch-switcher requires a branch name argument");
         }
 
-        String requested = arguments.getFirst() != null ? arguments.getFirst().strip() : "";
+        String firstArg = arguments.getFirst();
+        String requested = firstArg != null ? firstArg.strip() : "";
         String branch = normalizeBranchName(requested);
         if (branch == null || branch.isBlank()) {
             return new ToolResult(false, -1, "", "branch-switcher requires a non-empty branch name");
         }
         if (!SIMPLE_BRANCH_NAME_PATTERN.matcher(branch).matches()) {
-            return new ToolResult(false, -1, "", "Invalid branch name: " + branch);
+            return new ToolResult(false, -1, "", "Invalid branch name");
         }
 
         ToolResult refCheck = executeCommand(workspaceDir,
@@ -191,7 +192,7 @@ public class ToolExecutionService {
         if (!fetch.success()) {
             return new ToolResult(false, fetch.exitCode(), "",
                     "Failed to fetch branch '" + branch + "' from origin: "
-                            + (fetch.output() != null ? fetch.output().strip() : ""));
+                            + normalizeToolMessage(fetch.output()));
         }
 
         ToolResult checkout = executeCommand(workspaceDir,
@@ -199,7 +200,7 @@ public class ToolExecutionService {
         if (!checkout.success()) {
             return new ToolResult(false, checkout.exitCode(), "",
                     "Failed to switch to branch '" + branch + "': "
-                            + (checkout.output() != null ? checkout.output().strip() : ""));
+                            + normalizeToolMessage(checkout.output()));
         }
 
         return new ToolResult(true, 0, "Switched workspace branch to: " + branch, "");
@@ -213,6 +214,13 @@ public class ToolExecutionService {
             return branchName.substring("refs/heads/".length());
         }
         return branchName;
+    }
+
+    private String normalizeToolMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "";
+        }
+        return message.replace('\n', ' ').replace('\r', ' ').strip();
     }
 
     /**

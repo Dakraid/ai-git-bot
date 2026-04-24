@@ -566,8 +566,9 @@ public class IssueImplementationService {
             if ("branch-switcher".equalsIgnoreCase(toolRequest.getTool()) && !switched) {
                 ToolResult result = toolExecutionService.executeContextTool(
                         workspaceDir, "branch-switcher", toolRequest.getArgs());
-                if (result.success() && toolRequest.getArgs() != null && !toolRequest.getArgs().isEmpty()) {
-                    String requestedBranch = normalizeBranchRef(toolRequest.getArgs().getFirst());
+                List<String> args = toolRequest.getArgs();
+                if (result.success() && hasBranchSwitcherArgument(args)) {
+                    String requestedBranch = normalizeBranchRef(args.getFirst());
                     if (requestedBranch != null && !requestedBranch.isBlank()) {
                         selectedBranch = requestedBranch;
                         switched = true;
@@ -668,6 +669,17 @@ public class IssueImplementationService {
         return ref;
     }
 
+    private boolean hasBranchSwitcherArgument(List<String> args) {
+        return args != null && !args.isEmpty() && args.getFirst() != null;
+    }
+
+    /**
+     * Result of processing an optional branch-switch request from AI context tools.
+     *
+     * @param initialBranch        branch used before evaluating branch-switcher requests
+     * @param selectedBranch       final selected base branch after evaluating branch-switcher
+     * @param remainingToolRequests non-branch-switcher tool requests that should still be executed
+     */
     private record BranchSwitchResult(String initialBranch,
                                       String selectedBranch,
                                       List<ImplementationPlan.ToolRequest> remainingToolRequests) {

@@ -39,6 +39,22 @@ class ToolExecutionServiceTest {
     }
 
     @Test
+    void executeContextTool_branchSwitcher_missingArgs_returnsFailure() {
+        ToolResult result = service.executeContextTool(tempDir, "branch-switcher", List.of());
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("requires a branch name argument");
+    }
+
+    @Test
+    void executeContextTool_branchSwitcher_blankBranch_returnsFailure() {
+        ToolResult result = service.executeContextTool(tempDir, "branch-switcher", List.of("   "));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("requires a non-empty branch name");
+    }
+
+    @Test
     void executeContextTool_cat_readsRequestedRangeWithLineNumbers() throws IOException {
         Path file = tempDir.resolve("src/Main.java");
         Files.createDirectories(file.getParent());
