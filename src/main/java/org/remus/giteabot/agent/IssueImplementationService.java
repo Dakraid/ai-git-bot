@@ -147,6 +147,15 @@ public class IssueImplementationService {
             log.info("AI requested {} files and {} repository tools for context",
                     requestedFiles.size(), requestedTools != null ? requestedTools.size() : 0);
 
+            BranchSwitchResult branchSwitchResult = applyRequestedBranchSwitch(
+                    workspaceDir, baseBranch, requestedTools, issueNumber);
+            baseBranch = branchSwitchResult.selectedBranch();
+            requestedTools = branchSwitchResult.remainingToolRequests();
+            if (!baseBranch.equals(branchSwitchResult.initialBranch())) {
+                tree = repositoryClient.getRepositoryTree(owner, repo, baseBranch);
+                treeContext = promptBuilder.buildTreeContext(tree);
+            }
+
             String fileContext = fetchRequestedContext(owner, repo, baseBranch,
                     requestedFiles, requestedTools, workspaceDir);
 
@@ -537,6 +546,50 @@ public class IssueImplementationService {
         return sb.isEmpty() ? "No additional repository context could be retrieved." : sb.toString();
     }
 
+    private BranchSwitchResult applyRequestedBranchSwitch(Path workspaceDir,
+                                                          String baseBranch,
+                                                          List<ImplementationPlan.ToolRequest> toolRequests,
+                                                          Long issueNumber) {
+        if (toolRequests == null || toolRequests.isEmpty()) {
+            return new BranchSwitchResult(baseBranch, baseBranch, List.of());
+        }
+
+        String selectedBranch = baseBranch;
+        boolean switched = false;
+        List<ImplementationPlan.ToolRequest> remaining = new ArrayList<>();
+
+        for (ImplementationPlan.ToolRequest toolRequest : toolRequests) {
+            if (toolRequest == null || toolRequest.getTool() == null || toolRequest.getTool().isBlank()) {
+                continue;
+            }
+
+            if ("branch-switcher".equalsIgnoreCase(toolRequest.getTool()) && !switched) {
+                ToolResult result = toolExecutionService.executeContextTool(
+                        workspaceDir, "branch-switcher", toolRequest.getArgs());
+                String switchedBranch = extractSwitchedBranch(result);
+                if (switchedBranch != null && !switchedBranch.isBlank()) {
+                    selectedBranch = switchedBranch;
+                    switched = true;
+                    log.info("Switched workspace/context branch to '{}' for issue #{}",
+                            selectedBranch, issueNumber);
+                } else {
+                    log.warn("Branch switch request failed for issue #{}: {}",
+                            issueNumber, describeToolFailure(result));
+                }
+                continue;
+            }
+
+            if ("branch-switcher".equalsIgnoreCase(toolRequest.getTool())) {
+                log.info("Ignoring additional branch-switcher request for issue #{}", issueNumber);
+                continue;
+            }
+
+            remaining.add(toolRequest);
+        }
+
+        return new BranchSwitchResult(baseBranch, selectedBranch, remaining);
+    }
+
     private String executeRequestedContextTools(Path workspaceDir,
                                                 List<ImplementationPlan.ToolRequest> toolRequests) {
         if (toolRequests == null || toolRequests.isEmpty()) {
@@ -562,9 +615,10 @@ public class IssueImplementationService {
             }
             sb.append("`\n");
             if (result.success()) {
-                sb.append(result.output().isBlank() ? "(no output)" : result.output()).append("\n\n");
+                String output = result.output();
+                sb.append(output == null || output.isBlank() ? "(no output)" : output).append("\n\n");
             } else {
-                sb.append("Failed: ").append(result.error().isBlank() ? result.output() : result.error())
+                sb.append("Failed: ").append(describeToolFailure(result))
                         .append("\n\n");
             }
         }
@@ -611,6 +665,50 @@ public class IssueImplementationService {
             return ref.substring("refs/tags/".length());
         }
         return ref;
+    }
+
+    private String extractSwitchedBranch(ToolResult result) {
+        if (result == null || !result.success()) {
+            return null;
+        }
+        String output = result.output();
+        if (output == null || output.isBlank()) {
+            return null;
+        }
+        String prefix = "Switched workspace branch to:";
+        int idx = output.indexOf(prefix);
+        if (idx < 0) {
+            return null;
+        }
+        String branch = output.substring(idx + prefix.length()).trim();
+        return normalizeBranchRef(branch);
+    }
+
+    private String describeToolFailure(ToolResult result) {
+        if (result == null) {
+            return "unknown tool failure";
+        }
+        String error = result.error();
+        if (error != null && !error.isBlank()) {
+            return error;
+        }
+        String output = result.output();
+        if (output != null && !output.isBlank()) {
+            return output;
+        }
+        return "tool returned no details";
+    }
+
+    /**
+     * Result of processing an optional branch-switch request from AI context tools.
+     *
+     * @param initialBranch        branch used before evaluating branch-switcher requests
+     * @param selectedBranch       final selected base branch after evaluating branch-switcher
+     * @param remainingToolRequests non-branch-switcher tool requests that should still be executed
+     */
+    private record BranchSwitchResult(String initialBranch,
+                                      String selectedBranch,
+                                      List<ImplementationPlan.ToolRequest> remainingToolRequests) {
     }
 
     /** Retrieves the last parsed plan from the session history (the latest assistant JSON response). */

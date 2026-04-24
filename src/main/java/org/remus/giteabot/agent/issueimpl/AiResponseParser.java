@@ -184,6 +184,15 @@ public class AiResponseParser {
      * @return The thinking text, or {@code null} if the response is pure JSON
      */
     public String extractNonJsonResponse(String aiResponse) {
+        // First: if the response is pure JSON, there is no thinking text.
+        // This check must come BEFORE searching for ```json blocks, because tool
+        // arguments inside the JSON (e.g. patch-file content) may themselves contain
+        // the literal string "```json", which would otherwise be mistaken for a
+        // markdown code-fence and cause the JSON prefix to be posted as a comment.
+        if (aiResponse.strip().startsWith("{")) {
+            return null; // Pure JSON, no thinking text
+        }
+
         // Try to extract the text before any JSON block
         int jsonStart = aiResponse.indexOf("```json");
         if (jsonStart >= 0) {
@@ -202,11 +211,6 @@ public class AiResponseParser {
             }
             String thinking = aiResponse.substring(0, codeBlockStart).strip();
             return thinking.isEmpty() ? null : thinking;
-        }
-
-        // If no JSON block, check if it looks like JSON
-        if (aiResponse.strip().startsWith("{")) {
-            return null; // Pure JSON, no thinking text
         }
 
         return aiResponse;

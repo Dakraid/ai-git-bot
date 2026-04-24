@@ -161,6 +161,59 @@ If your GitHub Enterprise uses self-signed certificates, you may need to configu
 
 GitHub Enterprise has rate limits that may differ from github.com. Monitor your API usage if you have many repositories or high PR volume.
 
+## Agent Feature: Targeting a Specific Branch
+### Why a Workaround is Needed
+Unlike Gitea or GitLab, **GitHub's issue webhook payload does not include a branch reference**. When you assign an issue to the bot or mention it in an issue comment, the webhook event carries no information about which branch the implementation should target. The bot therefore always defaults to the repository's **default branch** (usually `main` or `master`).
+Other platforms (Gitea, GitLab) let you set an issue's target branch directly in the UI, which is then forwarded in the webhook payload. GitHub offers no such field.
+### The Workaround: `branch-switcher`
+To work on a different branch, you can instruct the AI to switch branches during its first context-discovery round by mentioning the target branch in the issue title, body, or a comment. The AI will then emit a `branch-switcher` tool request before reading any files, and the bot will check out the requested branch in the workspace.
+**How it works internally:**
+1. The bot clones the repository on the default branch.
+2. In the first AI context-request round the AI sees that a specific branch is required and includes a `branch-switcher` entry in `requestTools`.
+3. The bot fetches the target branch from `origin`, switches the workspace to it, and refreshes the file tree for that branch.
+4. All subsequent file reads, writes, and commits happen on the switched branch.
+> **Note:** Only a single branch switch per issue step is supported. Additional `branch-switcher` requests in the same round are ignored.
+### How to Trigger a Branch Switch
+Tell the bot which branch should be used directly in your issue text or in the comment that assigns/mentions the bot. A few examples:
+```
+Please implement this on the `develop` branch.
+```
+```
+@ai-bot Implement this feature on branch `feature/my-feature`.
+```
+```
+Target branch: release/1.2
+```
+The AI will automatically extract the branch name and produce a `branch-switcher` tool request in its first response round.
+### Example Tool Request (What the AI Sends)
+When the AI recognises a target branch, its first JSON response will include a `branch-switcher` in `requestTools`:
+```json
+{
+  "summary": "Implement feature X on the develop branch",
+  "requestTools": [
+    {
+      "id": "a1b2c3d4-0000-0000-0000-000000000001",
+      "tool": "branch-switcher",
+      "args": ["develop"]
+    },
+    {
+      "id": "a1b2c3d4-0000-0000-0000-000000000002",
+      "tool": "cat",
+      "args": ["src/main/java/com/example/MyService.java"]
+    }
+  ],
+  "requestFiles": []
+}
+```
+The bot executes the `branch-switcher` first, then proceeds with the remaining context tools on the switched branch. On success, the bot logs:
+```
+Switched workspace/context branch to 'develop' for issue #42
+```
+### Tips
+- **Be explicit**: If your workflow always targets a non-default branch, state the branch name clearly in the issue description template.
+- **Verify via PR**: After the agent creates the PR, confirm the base branch shown in the pull request header matches your intended target.
+- **Default fallback**: If the AI does not detect a branch name, it will work on the repository's default branch. You can always add a comment like `@ai-bot please redo this on branch develop` to trigger a fresh run on the correct branch.
+---
 ## Verification
 
 After setup, create a test pull request. The bot should:

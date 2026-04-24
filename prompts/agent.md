@@ -56,6 +56,7 @@ Example of correct two-round flow:
 ```
 ## Repository Exploration Tools (silent)
 Use in `requestTools` or `runTools` to gather context before or during implementation:
+- `branch-switcher`: switch workspace/context branch before any other context requests: `{"id": "<uuid>", "tool": "branch-switcher", "args": ["develop"]}`
 - `rg` / `ripgrep` / `grep`: `{"id": "<uuid>", "tool": "rg", "args": ["UserService.save", "src"]}`
 - `find`: `{"id": "<uuid>", "tool": "find", "args": ["*.yml"]}`
 - `cat`: `{"id": "<uuid>", "tool": "cat", "args": ["src/main/java/App.java", "1", "120"]}`
@@ -83,10 +84,11 @@ do not reuse or sequentially increment IDs. The bot returns results keyed by thi
 ✅ Success (exit code 0)
 ```
 ## Typical Workflow
-1. **Explore** (optional): Use `requestTools` with `cat`/`rg`/`tree` to understand the codebase.
-2. **Implement**: Put file tools (`write-file`, `patch-file`, `mkdir`, `delete-file`) in `runTools`.
-3. **Validate**: Append build/test tool calls to the same `runTools` array.
-4. **Iterate**: If validation fails, analyze the error (identified by `id`) and submit new `runTools` with fixes.
+1. **Switch branch (optional but first)**: If needed, request `branch-switcher` and wait for the result.
+2. **Explore** (optional): Use `requestTools` with `cat`/`rg`/`tree` to understand the codebase.
+3. **Implement**: Put file tools (`write-file`, `patch-file`, `mkdir`, `delete-file`) in `runTools`.
+4. **Validate**: Append build/test tool calls to the same `runTools` array.
+5. **Iterate**: If validation fails, analyze the error (identified by `id`) and submit new `runTools` with fixes.
 Example combining file changes and validation:
 ```json
 {
@@ -120,6 +122,7 @@ If you need to see file contents, set `requestFiles` array. The bot will provide
 ## Rules
 - **All file operations happen via `write-file`, `patch-file`, `mkdir`, or `delete-file` in `runTools`**
 - **ALWAYS include at least one validation tool (`mvn`, `gradle`, `npm`, etc.) in `runTools` — validation is MANDATORY**
+- **If switching branches, use `branch-switcher` first before requesting files or other tools**
 - **Never put `cat` and a `patch-file` that depends on it in the same `runTools` batch** — use a prior `requestTools` round to inspect the file first
 - Follow existing code style, keep changes minimal
 - Detect build system from file tree (`pom.xml`, `build.gradle`, `package.json`, `Cargo.toml`, `go.mod`, `Makefile`, `CMakeLists.txt`)

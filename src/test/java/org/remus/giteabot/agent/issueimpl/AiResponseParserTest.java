@@ -283,4 +283,38 @@ class AiResponseParserTest {
         assertThat(parser.truncateToFirstJsonObject("")).isEmpty();
     }
 
+
+
+    // ---- extractNonJsonResponse tests ----
+    @Test
+    void extractNonJsonResponse_pureJson_returnsNull() {
+        String pureJson = "{\"summary\":\"Do something\",\"runTools\":[]}";
+        assertThat(parser.extractNonJsonResponse(pureJson)).isNull();
+    }
+    @Test
+    void extractNonJsonResponse_pureJsonContainingBacktickJson_returnsNull() {
+        // Regression: A pure-JSON response (starts with '{') that contains the literal
+        // string "```json" inside a tool argument must NOT be treated as having thinking
+        // text before a markdown code-fence. The "starts with '{'" check must take
+        // priority over the "```json" search.
+        String pureJson = "{\"summary\":\"Add docs\",\"runTools\":[{\"id\":\"abc\",\"tool\":\"patch-file\","
+                + "\"args\":[\"README.md\",\"old content ```json fenced block end\"]}]}";
+        assertThat(parser.extractNonJsonResponse(pureJson)).isNull();
+    }
+    @Test
+    void extractNonJsonResponse_thinkingBeforeJsonBlock_returnsThinking() {
+        String response = "Let me think about this.\n\n```json\n{\"summary\":\"x\"}\n```";
+        assertThat(parser.extractNonJsonResponse(response)).isEqualTo("Let me think about this.");
+    }
+    @Test
+    void extractNonJsonResponse_startsWithJsonBlock_returnsNull() {
+        String response = "```json\n{\"summary\":\"x\"}\n```";
+        assertThat(parser.extractNonJsonResponse(response)).isNull();
+    }
+    @Test
+    void extractNonJsonResponse_plainText_returnsAsIs() {
+        String response = "Just some text without JSON.";
+        assertThat(parser.extractNonJsonResponse(response)).isEqualTo(response);
+    }
+
 }

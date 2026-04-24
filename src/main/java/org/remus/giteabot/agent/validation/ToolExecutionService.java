@@ -36,8 +36,11 @@ public class ToolExecutionService {
     private static final int MAX_TREE_DEPTH = 6;
     private static final int DEFAULT_GIT_LOG_LIMIT = 10;
     private static final long MAX_TEXT_FILE_SIZE_BYTES = 1_000_000;
+    private static final Pattern SIMPLE_BRANCH_NAME_PATTERN = Pattern.compile("[A-Za-z0-9._\\-/]+");
+    // Includes branch-switcher although it mutates workspace state; it is still executed in the
+    // context phase because it affects which branch subsequent context reads should target.
     private static final List<String> AVAILABLE_CONTEXT_TOOLS = List.of(
-            "rg", "ripgrep", "grep", "find", "cat", "git-log", "git-blame", "tree");
+            "rg", "ripgrep", "grep", "find", "cat", "git-log", "git-blame", "tree", "branch-switcher");
     /** File-modification tools — run in the workspace but results are NOT posted as public comments. */
     private static final List<String> AVAILABLE_FILE_TOOLS = List.of(
             "write-file", "patch-file", "mkdir", "delete-file");
@@ -157,9 +160,81 @@ public class ToolExecutionService {
             case "git-log" -> executeGitLogTool(workspaceDir, arguments);
             case "git-blame" -> executeGitBlameTool(workspaceDir, arguments);
             case "tree" -> executeTreeTool(workspaceDir, arguments);
+            case "branch-switcher" -> executeBranchSwitcherTool(workspaceDir, arguments);
             default -> new ToolResult(false, -1, "",
                     "Repository tool '" + tool + "' is not implemented");
         };
+    }
+
+    private ToolResult executeBranchSwitcherTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "branch-switcher requires a branch name argument");
+        }
+
+        String firstArg = arguments.getFirst();
+        String requested = firstArg != null ? firstArg.strip() : "";
+        String branch = normalizeBranchName(requested);
+        if (branch == null || branch.isBlank()) {
+            return new ToolResult(false, -1, "", "branch-switcher requires a non-empty branch name");
+        }
+        if (!SIMPLE_BRANCH_NAME_PATTERN.matcher(branch).matches()) {
+            return new ToolResult(false, -1, "", "Invalid branch name");
+        }
+
+        ToolResult refCheck = executeCommand(workspaceDir,
+                new String[]{"git", "check-ref-format", "--branch", branch});
+        if (!refCheck.success()) {
+            return new ToolResult(false, refCheck.exitCode(), "",
+                    "Invalid branch name for git: " + branch);
+        }
+
+        ToolResult fetch = executeCommand(workspaceDir,
+                new String[]{"git", "fetch", "origin",
+                        "refs/heads/" + branch + ":refs/remotes/origin/" + branch});
+        if (!fetch.success()) {
+            return new ToolResult(false, fetch.exitCode(), "",
+                    "Failed to fetch branch '" + branch + "' from origin: "
+                            + normalizeToolMessage(fetch.output()));
+        }
+
+        ToolResult checkout = executeCommand(workspaceDir,
+                new String[]{"git", "checkout", "-B", branch, "refs/remotes/origin/" + branch});
+        if (!checkout.success()) {
+            return new ToolResult(false, checkout.exitCode(), "",
+                    "Failed to switch to branch '" + branch + "': "
+                            + normalizeToolMessage(checkout.output()));
+        }
+
+        ToolResult currentBranch = executeCommand(workspaceDir,
+                new String[]{"git", "rev-parse", "--abbrev-ref", "HEAD"});
+        if (!currentBranch.success()) {
+            return new ToolResult(false, currentBranch.exitCode(), "",
+                    "Failed to verify checked-out branch: " + normalizeToolMessage(currentBranch.output()));
+        }
+        String checkedOutBranch = normalizeToolMessage(currentBranch.output());
+        if (!branch.equals(checkedOutBranch)) {
+            return new ToolResult(false, -1, "",
+                    "Branch switch verification failed");
+        }
+
+        return new ToolResult(true, 0, "Switched workspace branch to: " + checkedOutBranch, "");
+    }
+
+    private String normalizeBranchName(String branchName) {
+        if (branchName == null || branchName.isBlank()) {
+            return null;
+        }
+        if (branchName.startsWith("refs/heads/")) {
+            return branchName.substring("refs/heads/".length());
+        }
+        return branchName;
+    }
+
+    private String normalizeToolMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "";
+        }
+        return message.replace('\n', ' ').replace('\r', ' ').strip();
     }
 
     /**

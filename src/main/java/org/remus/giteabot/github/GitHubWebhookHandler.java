@@ -313,6 +313,9 @@ public class GitHubWebhookHandler {
         i.setNumber(toLong(issue.get("number")));
         i.setTitle((String) issue.get("title"));
         i.setBody((String) issue.get("body"));
+        // Native GitHub "issues" payloads do not include "ref". We still map it when present
+        // to support translated/custom payloads that supply an explicit issue base branch.
+        i.setRef((String) issue.get("ref"));
         if (issue.containsKey("pull_request") && issue.get("pull_request") != null) {
             WebhookPayload.IssuePullRequest ipr = new WebhookPayload.IssuePullRequest();
             Map<String, Object> prLink = (Map<String, Object>) issue.get("pull_request");
@@ -367,4 +370,3 @@ public class GitHubWebhookHandler {
         return null;
     }
 }
-

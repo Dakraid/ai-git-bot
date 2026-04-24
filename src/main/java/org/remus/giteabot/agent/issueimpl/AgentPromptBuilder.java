@@ -31,11 +31,14 @@ public class AgentPromptBuilder {
                 {
                   "summary": "Need more context",
                   "requestFiles": ["path/file1", "path/file2"],
-                  "requestTools": [{"id": "a6f3c1d2-7e84-4b0a-9f12-e5d8c3a10001", "tool": "rg", "args": ["UserService.save", "src"]}]
+                  "requestTools": [{"id": "a6f3c1d2-7e84-4b0a-9f12-e5d8c3a10001", "tool": "branch-switcher", "args": ["develop"]}]
                 }
                 ```
                 You may request max 20 files and up to 5 repository tools.
+                If you need another base branch, request `branch-switcher` first and wait for its result before
+                requesting additional files/tools.
                 Available repository tools:
+                - `branch-switcher`: switch workspace/context branch (`["branch-name"]`)
                 - `rg` / `ripgrep` / `grep`: search text usages (`["pattern"]` or `["pattern", "path"]`)
                 - `find`: find files by glob (`["*.yml"]` or `["*.java", "src"]`)
                 - `cat`: read a file with line numbers (`["path/file", "startLine", "endLine"]`)
