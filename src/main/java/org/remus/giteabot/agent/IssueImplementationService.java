@@ -221,26 +221,37 @@ public class IssueImplementationService {
     }
 
     /**
-     * Tool-based implementation loop.
-     * The AI proposes a list of {@code runTools} (file modifications + validation).
-     * All tools are executed in the workspace.  If validation passes → returns {@code true}.
-     * On failure the AI is given feedback and may retry.
+     * Unified tool-based implementation loop — used by both {@link #handleIssueAssigned} and
+     * {@link #handleIssueComment}.
+     * <p>
+     * The AI proposes a list of {@code runTools} (file modifications + validation).  All tools
+     * are executed in the cloned workspace.  Validation results are fed back to the AI on
+     * failure so it can self-correct.
+     * <p>
+     * The current session conversation (stored via {@link AgentSessionService}) is used as
+     * context for every AI call, so earlier dialogue (file-request step, prior comments) is
+     * always visible to the model.
      *
-     * @return {@code true} if at least one validation tool succeeded; {@code false} otherwise
+     * @param userMessage the next user turn to kick off this loop (will be appended to the session)
+     * @return {@code true} when the implementation is considered successful
      */
     private boolean runToolImplementationLoop(
             AgentSession session, String userMessage, String systemPrompt,
             Path workspaceDir, String owner, String repo, Long issueNumber) {
 
-        int maxRetries      = agentConfig.getValidation().isEnabled()
+        int maxRetries    = agentConfig.getValidation().isEnabled()
                 ? agentConfig.getValidation().getMaxRetries() : 1;
-        int maxToolRounds   = agentConfig.getValidation().getMaxToolExecutions();
+        int maxToolRounds = agentConfig.getValidation().getMaxToolExecutions();
         int fileRequestRounds = 0;
-        int toolRounds      = 0;
+        int toolRounds    = 0;
 
+        // Snapshot the prior conversation history (file-request dialogue, earlier comments, …)
+        // so it is visible to the model as context.  The list is then extended locally as the
+        // loop progresses — we do not re-query the session on every iteration so that mocks
+        // in tests remain simple.
+        List<AiMessage> history = new ArrayList<>(sessionService.toAiMessages(session));
         sessionService.addMessage(session, "user", userMessage);
         String currentMessage = userMessage;
-        List<AiMessage> history = new ArrayList<>();
 
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             log.info("Tool implementation loop for issue #{}, attempt {}/{}", issueNumber, attempt, maxRetries);
@@ -256,7 +267,7 @@ public class IssueImplementationService {
                 return false;
             }
 
-            // Context request before implementation
+            // Context request before implementation — does not count as an implementation attempt
             if (plan.hasContextRequests() && !plan.hasToolRequest() && fileRequestRounds < 3) {
                 fileRequestRounds++;
                 log.info("AI requesting additional context (round {}/3)", fileRequestRounds);
@@ -274,7 +285,7 @@ public class IssueImplementationService {
                 continue;
             }
 
-            // No tool requests at all
+            // No tool requests at all → ask AI to produce them
             if (!plan.hasToolRequest()) {
                 log.info("AI provided no runTools on attempt {}", attempt);
                 String feedbackMsg = promptBuilder.buildMissingToolFeedback();
@@ -285,7 +296,7 @@ public class IssueImplementationService {
                 continue;
             }
 
-            // Execute all tools
+            // Guard against runaway tool rounds
             if (toolRounds >= maxToolRounds) {
                 log.warn("Reached max tool rounds ({}) — returning current result", maxToolRounds);
                 return false;
@@ -303,12 +314,22 @@ public class IssueImplementationService {
                 }
             }
 
-            if (hasValidationTools(requests) && allValidationToolsPassed(requests, results)) {
+            // Validation disabled → treat as success after first tool execution
+            if (!agentConfig.getValidation().isEnabled()) {
+                return true;
+            }
+
+            // No validation tools present → file-only changes, consider success
+            if (!hasValidationTools(requests)) {
+                return true;
+            }
+
+            if (allValidationToolsPassed(requests, results)) {
                 log.info("All validation tools passed on attempt {}", attempt);
                 return true;
             }
 
-            // Give feedback and retry
+            // Validation failed → give feedback and let the AI retry
             String feedback = promptBuilder.buildMultiToolFeedback(requests, results);
             history.add(AiMessage.builder().role("user").content(currentMessage).build());
             history.add(AiMessage.builder().role("assistant").content(aiResponse).build());
@@ -317,75 +338,6 @@ public class IssueImplementationService {
         }
 
         log.warn("Tool implementation loop exhausted {} attempts without full success", maxRetries);
-        return false;
-    }
-
-    /**
-     * Executes the tools in {@code plan} and, on validation failure, gives feedback to the AI
-     * and retries up to {@code maxToolExecutions} times.
-     *
-     * @return {@code true} if all validation tools succeeded
-     */
-    private boolean executeWithRetry(AgentSession session, ImplementationPlan plan, String aiResponse,
-                                     String systemPrompt, Path workspaceDir,
-                                     String owner, String repo, Long issueNumber) {
-        int maxRetries = agentConfig.getValidation().getMaxToolExecutions();
-        List<AiMessage> history = new ArrayList<>();
-        String currentMessage = "";
-        ImplementationPlan currentPlan = plan;
-        String currentAiResponse = aiResponse;
-
-        for (int round = 1; round <= maxRetries; round++) {
-            List<ImplementationPlan.ToolRequest> requests = currentPlan.getEffectiveToolRequests();
-            List<ToolResult> results = executeAllTools(workspaceDir, requests);
-
-            // Post non-silent (validation) results as comments
-            for (int i = 0; i < requests.size(); i++) {
-                ImplementationPlan.ToolRequest req = requests.get(i);
-                if (!toolExecutionService.isSilentTool(req.getTool())) {
-                    notificationService.postToolResultComment(owner, repo, issueNumber, req, results.get(i));
-                }
-            }
-
-            if (!agentConfig.getValidation().isEnabled()) {
-                return true; // validation disabled → always succeed
-            }
-
-            boolean hasValidation = hasValidationTools(requests);
-            if (hasValidation && allValidationToolsPassed(requests, results)) {
-                log.info("Validation passed (follow-up round {})", round);
-                return true;
-            }
-            if (!hasValidation) {
-                // Only file/context tools ran — no validation to judge success
-                return true;
-            }
-
-            if (round >= maxRetries) {
-                log.warn("Validation failed after {} rounds", maxRetries);
-                return false;
-            }
-
-            // Feed results back to AI
-            String feedback = promptBuilder.buildMultiToolFeedback(requests, results);
-            history.add(AiMessage.builder().role("user").content(currentMessage).build());
-            history.add(AiMessage.builder().role("assistant").content(currentAiResponse).build());
-
-            sessionService.addMessage(session, "user", feedback);
-            List<AiMessage> updHistory = sessionService.toAiMessages(session);
-            currentAiResponse = aiClient.chat(updHistory.subList(0, updHistory.size() - 1),
-                    feedback, systemPrompt, null, agentConfig.getMaxTokens());
-            sessionService.addMessage(session, "assistant", currentAiResponse);
-            notificationService.postAiThinkingComment(owner, repo, issueNumber, currentAiResponse);
-
-            ImplementationPlan newPlan = responseParser.parseAiResponse(currentAiResponse);
-            if (newPlan == null || !newPlan.hasToolRequest()) {
-                log.warn("AI provided no runTools in retry round {}", round);
-                return false;
-            }
-            currentPlan = newPlan;
-            currentMessage = feedback;
-        }
         return false;
     }
 
@@ -480,47 +432,13 @@ public class IssueImplementationService {
             }
             workspaceDir = wsResult.workspacePath();
 
-            String systemPrompt  = promptService.getSystemPrompt(AGENT_PROMPT_NAME);
-            String userMessage   = promptBuilder.buildContinuationPrompt(commentBody);
-            sessionService.addMessage(session, "user", userMessage);
-
-            List<AiMessage> history = sessionService.toAiMessages(session);
+            String systemPrompt = promptService.getSystemPrompt(AGENT_PROMPT_NAME);
+            String userMessage  = promptBuilder.buildContinuationPrompt(commentBody);
 
             log.info("Requesting AI to continue implementation for issue #{}", issueNumber);
-            String aiResponse = aiClient.chat(history.subList(0, history.size() - 1), userMessage,
-                    systemPrompt, null, agentConfig.getMaxTokens());
-            sessionService.addMessage(session, "assistant", aiResponse);
-            notificationService.postAiThinkingComment(owner, repo, issueNumber, aiResponse);
-
-            ImplementationPlan plan = responseParser.parseAiResponse(aiResponse);
-
-            // Context rounds
-            int fileRequestRounds = 0;
-            while (plan != null && plan.hasContextRequests() && !plan.hasToolRequest()
-                    && fileRequestRounds < 3) {
-                fileRequestRounds++;
-                String ctx = fetchRequestedContext(owner, repo, workingBranch,
-                        plan.getRequestFiles(), plan.getRequestTools(), workspaceDir);
-                String ctxMsg = "Here is the requested repository context:\n" + ctx
-                        + "\n\nNow implement the changes using `runTools`. "
-                        + "Use write-file/patch-file for changes.  Output JSON per system prompt format.";
-                sessionService.addMessage(session, "user", ctxMsg);
-                List<AiMessage> updHistory = sessionService.toAiMessages(session);
-                aiResponse = aiClient.chat(updHistory.subList(0, updHistory.size() - 1), ctxMsg,
-                        systemPrompt, null, agentConfig.getMaxTokens());
-                sessionService.addMessage(session, "assistant", aiResponse);
-                notificationService.postAiThinkingComment(owner, repo, issueNumber, aiResponse);
-                plan = responseParser.parseAiResponse(aiResponse);
-            }
-
-            if (plan == null || !plan.hasToolRequest()) {
-                sessionService.setStatus(session, AgentSession.AgentSessionStatus.PR_CREATED);
-                return;
-            }
-
-            // Execute tools from plan + retry loop if validation fails
-            boolean success = executeWithRetry(session, plan, aiResponse, systemPrompt,
-                    workspaceDir, owner, repo, issueNumber);
+            // runToolImplementationLoop handles: AI call, context rounds, tool execution, retries
+            boolean success = runToolImplementationLoop(
+                    session, userMessage, systemPrompt, workspaceDir, owner, repo, issueNumber);
             if (!success) {
                 sessionService.setStatus(session, AgentSession.AgentSessionStatus.PR_CREATED);
                 repositoryClient.postComment(owner, repo, issueNumber,
