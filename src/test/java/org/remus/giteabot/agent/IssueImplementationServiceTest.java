@@ -55,6 +55,9 @@ class IssueImplementationServiceTest {
         lenient().when(toolExecutionService.getAvailableTools()).thenReturn(List.of("mvn"));
         lenient().when(toolExecutionService.getAvailableFileTools()).thenReturn(List.of("write-file", "patch-file", "mkdir", "delete-file"));
         lenient().when(toolExecutionService.getAvailableContextTools()).thenReturn(List.of("rg", "cat", "find", "tree"));
+        // isValidationTool is the authoritative check for validation tools; delegate to getAvailableTools()
+        lenient().when(toolExecutionService.isValidationTool(anyString()))
+                .thenAnswer(inv -> List.of("mvn").contains(inv.getArgument(0)));
     }
 
     // ---- handleIssueAssigned tests ----

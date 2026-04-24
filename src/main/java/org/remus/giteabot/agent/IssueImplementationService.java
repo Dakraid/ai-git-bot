@@ -303,15 +303,7 @@ public class IssueImplementationService {
                 }
             }
 
-            // Check if all validation tools succeeded
-            boolean hasValidation = requests.stream()
-                    .anyMatch(r -> !toolExecutionService.isSilentTool(r.getTool()));
-            boolean allValidationPassed = !hasValidation
-                    || IntStream.range(0, requests.size())
-                            .filter(i -> !toolExecutionService.isSilentTool(requests.get(i).getTool()))
-                            .allMatch(i -> results.get(i).success());
-
-            if (allValidationPassed && hasValidation) {
+            if (hasValidationTools(requests) && allValidationToolsPassed(requests, results)) {
                 log.info("All validation tools passed on attempt {}", attempt);
                 return true;
             }
@@ -359,14 +351,8 @@ public class IssueImplementationService {
                 return true; // validation disabled → always succeed
             }
 
-            boolean hasValidation = requests.stream()
-                    .anyMatch(r -> !toolExecutionService.isSilentTool(r.getTool()));
-            boolean allPassed = !hasValidation
-                    || IntStream.range(0, requests.size())
-                            .filter(i -> !toolExecutionService.isSilentTool(requests.get(i).getTool()))
-                            .allMatch(i -> results.get(i).success());
-
-            if (allPassed && hasValidation) {
+            boolean hasValidation = hasValidationTools(requests);
+            if (hasValidation && allValidationToolsPassed(requests, results)) {
                 log.info("Validation passed (follow-up round {})", round);
                 return true;
             }
@@ -403,6 +389,27 @@ public class IssueImplementationService {
         return false;
     }
 
+    /**
+     * Returns {@code true} if {@code requests} contains at least one configured validation tool
+     * (e.g. {@code mvn}, {@code npm}).  Uses {@link ToolExecutionService#isValidationTool} which
+     * checks the configured {@code available-tools} list — not the weaker {@code !isSilentTool}.
+     */
+    private boolean hasValidationTools(List<ImplementationPlan.ToolRequest> requests) {
+        return requests.stream()
+                .anyMatch(r -> toolExecutionService.isValidationTool(r.getTool()));
+    }
+    /**
+     * Returns {@code true} if every validation tool in {@code requests} produced a successful result.
+     * When there are <em>no</em> validation tools this returns {@code true} vacuously — callers must
+     * guard with {@link #hasValidationTools} when they need to distinguish "nothing to validate" from
+     * "all validations passed".
+     */
+    private boolean allValidationToolsPassed(List<ImplementationPlan.ToolRequest> requests,
+                                              List<ToolResult> results) {
+        return IntStream.range(0, requests.size())
+                .filter(i -> toolExecutionService.isValidationTool(requests.get(i).getTool()))
+                .allMatch(i -> results.get(i).success());
+    }
     /** Execute each tool and collect results (file tools via executeFileTool, others via context/validation). */
     private List<ToolResult> executeAllTools(Path workspaceDir,
                                               List<ImplementationPlan.ToolRequest> requests) {

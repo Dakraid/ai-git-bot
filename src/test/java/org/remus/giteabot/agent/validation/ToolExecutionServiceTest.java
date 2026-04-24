@@ -180,4 +180,23 @@ class ToolExecutionServiceTest {
         assertThat(service.isSilentTool("cat")).isTrue();
         assertThat(service.isSilentTool("mvn")).isFalse();
     }
+
+    @Test
+    void isValidationTool_recognizesConfiguredTools() {
+        // mvn is in the configured available-tools list (set up via agentConfig in setUp)
+        assertThat(service.isValidationTool("mvn")).isTrue();
+        // file and context tools are NOT validation tools
+        assertThat(service.isValidationTool("write-file")).isFalse();
+        assertThat(service.isValidationTool("cat")).isFalse();
+        assertThat(service.isValidationTool("rg")).isFalse();
+        assertThat(service.isValidationTool(null)).isFalse();
+    }
+
+    @Test
+    void isValidationTool_notEquivalentToNotSilentTool() {
+        // An unknown tool that is also not in the silent lists must NOT count as a validation tool.
+        // Previously '!isSilentTool' was used which would incorrectly classify unknown tools.
+        assertThat(service.isSilentTool("unknown-tool")).isFalse();    // not silent
+        assertThat(service.isValidationTool("unknown-tool")).isFalse(); // but also not a validation tool
+    }
 }

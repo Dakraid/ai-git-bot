@@ -93,6 +93,19 @@ public class ToolExecutionService {
     public boolean isSilentTool(String tool) {
         return isContextTool(tool) || isFileTool(tool);
     }
+    /**
+     * Returns {@code true} if the given tool is a configured validation tool
+     * (i.e. listed in {@link AgentConfigProperties.ValidationConfig#getAvailableTools()},
+     * e.g. {@code mvn}, {@code gradle}, {@code npm}).
+     * <p>
+     * This is the authoritative check for "does this tool count as validation?".
+     * Using {@code !isSilentTool} is <em>not</em> equivalent: a tool could be unknown
+     * to all three categories, and silently falling into the "validation" bucket would
+     * produce incorrect pass/fail semantics.
+     */
+    public boolean isValidationTool(String tool) {
+        return getAvailableTools().contains(tool != null ? tool.strip().toLowerCase() : "");
+    }
 
     /**
      * Executes a tool command in the given workspace directory.
