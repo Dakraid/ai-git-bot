@@ -86,6 +86,10 @@ In addition to the existing webhook events (Pull Request, Issue Comment, etc.), 
 - Go to **Settings → Webhooks → Edit**
 - Under "Which events would you like to trigger this webhook?", ensure **Issues** is checked
 - Save
+
+> Note for GitHub issues webhooks: the payload does not include an issue branch ref.
+> To work on a non-default branch, the agent can request a `branch-switcher` tool call
+> during context discovery before additional file/tool requests.
 ### 3. Required Permissions
 The bot's API token needs **write** access to:
 - **Repository**: Create branches, push commits, create pull requests

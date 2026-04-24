@@ -15,10 +15,10 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class GitHubWebhookHandlerTest {
@@ -36,7 +36,7 @@ class GitHubWebhookHandlerTest {
         bot.setName("test-bot");
         bot.setUsername("ai_bot");
 
-        when(botWebhookService.isBotUser(eq(bot), any(WebhookPayload.class))).thenReturn(false);
+        lenient().when(botWebhookService.isBotUser(eq(bot), any(WebhookPayload.class))).thenReturn(false);
     }
 
     @Test
@@ -53,6 +53,34 @@ class GitHubWebhookHandlerTest {
         ArgumentCaptor<WebhookPayload> captor = ArgumentCaptor.forClass(WebhookPayload.class);
         verify(botWebhookService).handleIssueAssigned(eq(bot), captor.capture());
         assertEquals("release/1.2", captor.getValue().getIssue().getRef());
+    }
+
+    @Test
+    void translatePayload_issueWithoutRef_keepsRefNull() {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("action", "assigned");
+        payload.put("sender", ownerMap("tom"));
+        payload.put("repository", repositoryMap());
+        payload.put("issue", issueMapWithAssigneeAndRef(42L, "ai_bot", null));
+
+        WebhookPayload translated = handler.translatePayload("issues", payload);
+
+        assertEquals("assigned", translated.getAction());
+        assertNull(translated.getIssue().getRef());
+    }
+
+    @Test
+    void issueAssignedPayload_toDifferentAssignee_isIgnored() {
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("action", "assigned");
+        payload.put("sender", ownerMap("tom"));
+        payload.put("repository", repositoryMap());
+        payload.put("issue", issueMapWithAssigneeAndRef(42L, "someone_else", null));
+
+        ResponseEntity<String> response = handler.handleWebhook(bot, "issues", payload);
+
+        assertEquals("ignored", response.getBody());
+        verify(botWebhookService, never()).handleIssueAssigned(any(), any());
     }
 
     private Map<String, Object> ownerMap(String login) {

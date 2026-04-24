@@ -27,7 +27,15 @@ class ToolExecutionServiceTest {
     @Test
     void getAvailableContextTools_containsExpectedTools() {
         assertThat(service.getAvailableContextTools())
-                .contains("rg", "grep", "find", "cat", "git-log", "git-blame", "tree");
+                .contains("rg", "grep", "find", "cat", "git-log", "git-blame", "tree", "branch-switcher");
+    }
+
+    @Test
+    void executeContextTool_branchSwitcher_invalidBranchName_returnsFailure() {
+        ToolResult result = service.executeContextTool(tempDir, "branch-switcher", List.of("../main"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("Invalid branch name");
     }
 
     @Test
