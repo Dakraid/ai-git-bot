@@ -566,18 +566,15 @@ public class IssueImplementationService {
             if ("branch-switcher".equalsIgnoreCase(toolRequest.getTool()) && !switched) {
                 ToolResult result = toolExecutionService.executeContextTool(
                         workspaceDir, "branch-switcher", toolRequest.getArgs());
-                List<String> args = toolRequest.getArgs();
-                if (result.success() && hasBranchSwitcherArgument(args)) {
-                    String requestedBranch = normalizeBranchRef(args.getFirst());
-                    if (requestedBranch != null && !requestedBranch.isBlank()) {
-                        selectedBranch = requestedBranch;
-                        switched = true;
-                        log.info("Switched workspace/context branch to '{}' for issue #{}",
-                                selectedBranch, issueNumber);
-                    }
+                String switchedBranch = extractSwitchedBranch(result);
+                if (switchedBranch != null && !switchedBranch.isBlank()) {
+                    selectedBranch = switchedBranch;
+                    switched = true;
+                    log.info("Switched workspace/context branch to '{}' for issue #{}",
+                            selectedBranch, issueNumber);
                 } else {
                     log.warn("Branch switch request failed for issue #{}: {}",
-                            issueNumber, result.error().isBlank() ? result.output() : result.error());
+                            issueNumber, describeToolFailure(result));
                 }
                 continue;
             }
@@ -618,9 +615,10 @@ public class IssueImplementationService {
             }
             sb.append("`\n");
             if (result.success()) {
-                sb.append(result.output().isBlank() ? "(no output)" : result.output()).append("\n\n");
+                String output = result.output();
+                sb.append(output == null || output.isBlank() ? "(no output)" : output).append("\n\n");
             } else {
-                sb.append("Failed: ").append(result.error().isBlank() ? result.output() : result.error())
+                sb.append("Failed: ").append(describeToolFailure(result))
                         .append("\n\n");
             }
         }
@@ -669,8 +667,36 @@ public class IssueImplementationService {
         return ref;
     }
 
-    private boolean hasBranchSwitcherArgument(List<String> args) {
-        return args != null && !args.isEmpty() && args.getFirst() != null;
+    private String extractSwitchedBranch(ToolResult result) {
+        if (result == null || !result.success()) {
+            return null;
+        }
+        String output = result.output();
+        if (output == null || output.isBlank()) {
+            return null;
+        }
+        String prefix = "Switched workspace branch to:";
+        int idx = output.indexOf(prefix);
+        if (idx < 0) {
+            return null;
+        }
+        String branch = output.substring(idx + prefix.length()).trim();
+        return normalizeBranchRef(branch);
+    }
+
+    private String describeToolFailure(ToolResult result) {
+        if (result == null) {
+            return "unknown tool failure";
+        }
+        String error = result.error();
+        if (error != null && !error.isBlank()) {
+            return error;
+        }
+        String output = result.output();
+        if (output != null && !output.isBlank()) {
+            return output;
+        }
+        return "tool returned no details";
     }
 
     /**

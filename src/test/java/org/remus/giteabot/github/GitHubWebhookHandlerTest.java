@@ -43,7 +43,7 @@ class GitHubWebhookHandlerTest {
     }
 
     @Test
-    void issueAssignedPayload_withIssueRef_propagatesRefToWebhookPayload() {
+    void issueAssignedPayload_withCustomIssueRef_propagatesCompatibilityRefToWebhookPayload() {
         Map<String, Object> payload = new HashMap<>();
         payload.put("action", "assigned");
         payload.put("sender", ownerMap("tom"));

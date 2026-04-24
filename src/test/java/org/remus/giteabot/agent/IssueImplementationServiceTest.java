@@ -220,6 +220,68 @@ class IssueImplementationServiceTest {
     }
 
     @Test
+    void handleIssueAssigned_contextBranchSwitcherFailure_fallsBackToOriginalBaseBranch() {
+        WebhookPayload payload = createIssuePayload();
+
+        when(repositoryClient.getDefaultBranch("testowner", "testrepo")).thenReturn("main");
+        when(repositoryClient.getRepositoryTree("testowner", "testrepo", "main"))
+                .thenReturn(List.of(Map.of("type", "blob", "path", "README.md")));
+        when(promptService.getSystemPrompt("agent")).thenReturn("You are an agent");
+        when(workspaceService.prepareWorkspace(eq("testowner"), eq("testrepo"), eq("main"),
+                isNull(), isNull()))
+                .thenReturn(WorkspaceResult.success(FAKE_WORKSPACE));
+
+        String contextResponse = """
+                ```json
+                {
+                  "summary": "Try branch switch",
+                  "requestTools": [
+                    {"id": "ctx-001", "tool": "branch-switcher", "args": ["develop"]}
+                  ]
+                }
+                ```
+                """;
+        String implResponse = """
+                ```json
+                {
+                  "summary": "Implemented on fallback branch",
+                  "runTools": [
+                    {"id": "f-001", "tool": "write-file", "args": ["src/Feature.java", "public class Feature {}"]},
+                    {"id": "v-001", "tool": "mvn", "args": ["compile", "-q", "-B"]}
+                  ]
+                }
+                ```
+                """;
+        when(aiClient.chat(anyList(), anyString(), anyString(), isNull(), anyInt()))
+                .thenReturn(contextResponse, implResponse);
+
+        when(toolExecutionService.executeContextTool(eq(FAKE_WORKSPACE), eq("branch-switcher"), eq(List.of("develop"))))
+                .thenReturn(new ToolResult(false, 1, null, null));
+
+        when(toolExecutionService.isFileTool("write-file")).thenReturn(true);
+        when(toolExecutionService.isFileTool("mvn")).thenReturn(false);
+        when(toolExecutionService.isContextTool("mvn")).thenReturn(false);
+        when(toolExecutionService.isSilentTool("write-file")).thenReturn(true);
+        when(toolExecutionService.isSilentTool("mvn")).thenReturn(false);
+        when(toolExecutionService.executeFileTool(eq(FAKE_WORKSPACE), eq("write-file"), anyList()))
+                .thenReturn(new ToolResult(true, 0, "File written: src/Feature.java", ""));
+        when(toolExecutionService.executeTool(eq(FAKE_WORKSPACE), eq("mvn"), anyList()))
+                .thenReturn(new ToolResult(true, 0, "BUILD SUCCESS", ""));
+
+        when(workspaceService.commitAndPush(eq(FAKE_WORKSPACE), eq("ai-agent/issue-42"),
+                anyString(), anyString(), anyString(), eq(true)))
+                .thenReturn(true);
+        when(repositoryClient.createPullRequest(eq("testowner"), eq("testrepo"), anyString(), anyString(),
+                eq("ai-agent/issue-42"), eq("main"))).thenReturn(1L);
+
+        service.handleIssueAssigned(payload);
+
+        verify(repositoryClient, never()).getRepositoryTree("testowner", "testrepo", "develop");
+        verify(repositoryClient).createPullRequest(eq("testowner"), eq("testrepo"), anyString(), anyString(),
+                eq("ai-agent/issue-42"), eq("main"));
+    }
+
+    @Test
     void handleIssueAssigned_aiReturnsNoTools_postsFailure() {
         WebhookPayload payload = createIssuePayload();
 

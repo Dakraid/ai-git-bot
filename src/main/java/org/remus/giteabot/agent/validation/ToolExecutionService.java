@@ -37,6 +37,8 @@ public class ToolExecutionService {
     private static final int DEFAULT_GIT_LOG_LIMIT = 10;
     private static final long MAX_TEXT_FILE_SIZE_BYTES = 1_000_000;
     private static final Pattern SIMPLE_BRANCH_NAME_PATTERN = Pattern.compile("[A-Za-z0-9._\\-/]+");
+    // Includes branch-switcher although it mutates workspace state; it is still executed in the
+    // context phase because it affects which branch subsequent context reads should target.
     private static final List<String> AVAILABLE_CONTEXT_TOOLS = List.of(
             "rg", "ripgrep", "grep", "find", "cat", "git-log", "git-blame", "tree", "branch-switcher");
     /** File-modification tools — run in the workspace but results are NOT posted as public comments. */
@@ -203,7 +205,19 @@ public class ToolExecutionService {
                             + normalizeToolMessage(checkout.output()));
         }
 
-        return new ToolResult(true, 0, "Switched workspace branch to: " + branch, "");
+        ToolResult currentBranch = executeCommand(workspaceDir,
+                new String[]{"git", "rev-parse", "--abbrev-ref", "HEAD"});
+        if (!currentBranch.success()) {
+            return new ToolResult(false, currentBranch.exitCode(), "",
+                    "Failed to verify checked-out branch: " + normalizeToolMessage(currentBranch.output()));
+        }
+        String checkedOutBranch = normalizeToolMessage(currentBranch.output());
+        if (!branch.equals(checkedOutBranch)) {
+            return new ToolResult(false, -1, "",
+                    "Branch switch verification failed");
+        }
+
+        return new ToolResult(true, 0, "Switched workspace branch to: " + checkedOutBranch, "");
     }
 
     private String normalizeBranchName(String branchName) {
