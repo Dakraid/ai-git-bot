@@ -24,6 +24,8 @@ import java.util.regex.Pattern;
 @Slf4j
 public class AiResponseParser {
 
+    public static final Pattern PATTERN = Pattern.compile(
+            "(\\\\\\\\)|\\\\([^\"\\\\bfnrtu/])");
     private static final Pattern JSON_BLOCK_PATTERN = Pattern.compile("```json\\s*\\n(.*?)\\n\\s*```", Pattern.DOTALL);
     private static final Pattern JSON_BLOCK_UNCLOSED_PATTERN = Pattern.compile("```json\\s*\\n(\\{.*)", Pattern.DOTALL);
     private static final Pattern JSON_OBJECT_PATTERN = Pattern.compile("(\\{\\s*\"summary\"\\s*:.*)", Pattern.DOTALL);
@@ -382,9 +384,7 @@ public class AiResponseParser {
         // Match either a valid \\ (double backslash, keep as-is) or a single \ followed by
         // an invalid JSON escape character (replace with \\).
         // This prevents re-processing the second \ of an already-valid \\ sequence.
-        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
-                "(\\\\\\\\)|\\\\([^\"\\\\bfnrtu/])");
-        java.util.regex.Matcher m = p.matcher(json);
+        java.util.regex.Matcher m = PATTERN.matcher(json);
         return m.replaceAll(mr -> {
             if (mr.group(1) != null) {
                 // Valid \\ sequence – keep unchanged
