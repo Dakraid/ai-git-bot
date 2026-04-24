@@ -138,6 +138,13 @@ Git Integrations define connections to Git providers. Navigate to **Git Integrat
 - For GitHub Enterprise, the API is at `<your-domain>/api/v3`
 - See [GitHub Setup](GITHUB_SETUP.md) for token creation instructions
 
+> **GitHub Agent Limitation — Branch Targeting:** GitHub issue webhook payloads do not include
+> a branch reference. The agent always starts on the repository's default branch. To target a
+> different branch, mention the branch name in the issue or a comment (e.g. *"implement this on
+> the `develop` branch"*). The AI will then request a `branch-switcher` context tool in its first
+> round and switch the workspace accordingly before making any changes.
+> See [GitHub Setup — Agent Feature: Targeting a Specific Branch](GITHUB_SETUP.md#agent-feature-targeting-a-specific-branch) for details.
+
 #### GitLab / GitLab CE/EE
 
 - Uses `PRIVATE-TOKEN: <token>` authentication header

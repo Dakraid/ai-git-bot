@@ -1,23 +1,49 @@
 package org.remus.giteabot.agent.validation;
 
 import lombok.extern.slf4j.Slf4j;
-import org.remus.giteabot.agent.model.FileChange;
 import org.remus.giteabot.config.AgentConfigProperties;
 import org.springframework.stereotype.Service;
 
-import java.io.*;
-import java.nio.file.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
+import java.util.stream.Stream;
 
 /**
- * Executes tools requested by the AI agent for validation purposes.
- * The AI decides which tools to run based on the file tree and available tools.
+ * Executes external tools (e.g. build / test commands) requested by the AI agent.
+ * <p>
+ * The list of allowed tools is configured via
+ * {@link AgentConfigProperties.ValidationConfig#getAvailableTools()}.
  */
 @Slf4j
 @Service
 public class ToolExecutionService {
+
+    private static final int MAX_TOOL_OUTPUT_CHARS = 10_000;
+    private static final int MAX_SEARCH_MATCHES = 200;
+    private static final int MAX_SEARCH_DEPTH = 12;
+    private static final int MAX_TREE_DEPTH = 6;
+    private static final int DEFAULT_GIT_LOG_LIMIT = 10;
+    private static final long MAX_TEXT_FILE_SIZE_BYTES = 1_000_000;
+    private static final Pattern SIMPLE_BRANCH_NAME_PATTERN = Pattern.compile("[A-Za-z0-9._\\-/]+");
+    // Includes branch-switcher although it mutates workspace state; it is still executed in the
+    // context phase because it affects which branch subsequent context reads should target.
+    private static final List<String> AVAILABLE_CONTEXT_TOOLS = List.of(
+            "rg", "ripgrep", "grep", "find", "cat", "git-log", "git-blame", "tree", "branch-switcher");
+    /** File-modification tools — run in the workspace but results are NOT posted as public comments. */
+    private static final List<String> AVAILABLE_FILE_TOOLS = List.of(
+            "write-file", "patch-file", "mkdir", "delete-file");
 
     private final AgentConfigProperties agentConfig;
 
@@ -26,99 +52,81 @@ public class ToolExecutionService {
     }
 
     /**
-     * Returns the list of available tools for the AI to use.
+     * Returns the list of tools that the AI agent is allowed to invoke.
      */
     public List<String> getAvailableTools() {
         return agentConfig.getValidation().getAvailableTools();
     }
 
     /**
-     * Prepares a workspace by cloning the repository and applying file changes.
-     * Returns the result containing either the workspace path or an error message.
-     *
-     * @param owner       Repository owner
-     * @param repo        Repository name
-     * @param branch      The branch to clone
-     * @param fileChanges The file changes to apply
-     * @param giteaUrl    The Gitea server URL
-     * @param giteaToken  The Gitea API token
-     * @return WorkspaceResult containing the path or error details
+     * Returns the repository exploration tools the AI can use before coding.
      */
-    public WorkspaceResult prepareWorkspace(String owner, String repo, String branch,
-                                  List<FileChange> fileChanges, String giteaUrl, String giteaToken) {
-        try {
-            // Create temp directory for clone
-            Path tempDir = Files.createTempDirectory("agent-validation-");
-            log.info("Cloning repository to {} for validation", tempDir);
-
-            // Clone using git command
-            String cloneUrl = buildCloneUrl(owner, repo, giteaUrl, giteaToken);
-            CommandResult cloneResult = runCommand(tempDir.getParent().toFile(),
-                    new String[]{"git", "clone", "--depth", "1", "--branch", branch, cloneUrl, tempDir.getFileName().toString()},
-                    60);
-
-            if (!cloneResult.success()) {
-                log.error("Failed to clone repository: {}", cloneResult.output());
-                deleteDirectory(tempDir);
-                return WorkspaceResult.failure("Failed to clone repository: " + cloneResult.output());
-            }
-
-            // Apply file changes
-            for (FileChange change : fileChanges) {
-                Path filePath = tempDir.resolve(change.getPath());
-
-                switch (change.getOperation()) {
-                    case CREATE, UPDATE -> {
-                        Files.createDirectories(filePath.getParent());
-                        Files.writeString(filePath, change.getContent());
-                    }
-                    case DELETE -> Files.deleteIfExists(filePath);
-                }
-            }
-
-            return WorkspaceResult.success(tempDir);
-
-        } catch (IOException e) {
-            log.error("Failed to prepare workspace: {}", e.getMessage());
-            return WorkspaceResult.failure("Failed to prepare workspace: " + e.getMessage());
-        }
+    public List<String> getAvailableContextTools() {
+        return AVAILABLE_CONTEXT_TOOLS;
     }
 
     /**
-     * Result of workspace preparation.
+     * Returns the file-modification tools the AI can use to create/patch/delete files
+     * in the workspace. Results go back to the AI but are NOT posted as public comments.
      */
-    public record WorkspaceResult(
-            boolean success,
-            Path workspacePath,
-            String error
-    ) {
-        public static WorkspaceResult success(Path path) {
-            return new WorkspaceResult(true, path, null);
-        }
+    public List<String> getAvailableFileTools() {
+        return AVAILABLE_FILE_TOOLS;
+    }
 
-        public static WorkspaceResult failure(String error) {
-            return new WorkspaceResult(false, null, error);
-        }
+    /**
+     * Returns {@code true} if the given tool name belongs to the read-only context tools
+     * (e.g. {@code cat}, {@code rg}) whose results should not be posted as issue comments.
+     */
+    public boolean isContextTool(String tool) {
+        return AVAILABLE_CONTEXT_TOOLS.contains(tool != null ? tool.strip().toLowerCase() : "");
+    }
+
+    /**
+     * Returns {@code true} if the given tool is a file-modification tool
+     * (write-file, patch-file, mkdir, delete-file).
+     */
+    public boolean isFileTool(String tool) {
+        return AVAILABLE_FILE_TOOLS.contains(tool != null ? tool.strip().toLowerCase() : "");
+    }
+
+    /**
+     * Returns {@code true} if the tool result should NOT be posted as a public issue comment.
+     * Both context tools and file tools are "silent".
+     */
+    public boolean isSilentTool(String tool) {
+        return isContextTool(tool) || isFileTool(tool);
+    }
+    /**
+     * Returns {@code true} if the given tool is a configured validation tool
+     * (i.e. listed in {@link AgentConfigProperties.ValidationConfig#getAvailableTools()},
+     * e.g. {@code mvn}, {@code gradle}, {@code npm}).
+     * <p>
+     * This is the authoritative check for "does this tool count as validation?".
+     * Using {@code !isSilentTool} is <em>not</em> equivalent: a tool could be unknown
+     * to all three categories, and silently falling into the "validation" bucket would
+     * produce incorrect pass/fail semantics.
+     */
+    public boolean isValidationTool(String tool) {
+        return getAvailableTools().contains(tool != null ? tool.strip().toLowerCase() : "");
     }
 
     /**
      * Executes a tool command in the given workspace directory.
      *
      * @param workspaceDir The workspace directory
-     * @param tool         The tool to execute (must be in availableTools)
+     * @param tool         The tool to execute (must be in {@link #getAvailableTools()})
      * @param arguments    The arguments to pass to the tool
      * @return The execution result
      */
     public ToolResult executeTool(Path workspaceDir, String tool, List<String> arguments) {
-        // Validate tool is allowed
         List<String> availableTools = getAvailableTools();
         if (!availableTools.contains(tool)) {
             return new ToolResult(false, -1,
-                    "Tool '" + tool + "' is not available. Available tools: " + String.join(", ", availableTools),
+                    "Tool '" + tool + "' is not available. Available tools: "
+                            + String.join(", ", availableTools),
                     "");
         }
 
-        // Build command
         String[] command = new String[1 + (arguments != null ? arguments.size() : 0)];
         command[0] = tool;
         if (arguments != null) {
@@ -127,8 +135,563 @@ public class ToolExecutionService {
             }
         }
 
-        log.info("Executing tool: {} {}", tool, arguments != null ? String.join(" ", arguments) : "");
+        log.info("Executing tool: {} {}", tool,
+                arguments != null ? String.join(" ", arguments) : "");
 
+        return executeCommand(workspaceDir, command);
+    }
+
+    /**
+     * Executes a read-only repository exploration tool in the given workspace.
+     */
+    public ToolResult executeContextTool(Path workspaceDir, String tool, List<String> arguments) {
+        String normalizedTool = tool != null ? tool.strip().toLowerCase() : "";
+        if (!AVAILABLE_CONTEXT_TOOLS.contains(normalizedTool)) {
+            return new ToolResult(false, -1, "",
+                    "Repository tool '" + tool + "' is not available. Available tools: "
+                            + String.join(", ", AVAILABLE_CONTEXT_TOOLS));
+        }
+
+        return switch (normalizedTool) {
+            // Support both names because models often ask for either `rg` or `ripgrep`.
+            case "rg", "ripgrep", "grep" -> executeSearchTool(workspaceDir, arguments);
+            case "find" -> executeFindTool(workspaceDir, arguments);
+            case "cat" -> executeCatTool(workspaceDir, arguments);
+            case "git-log" -> executeGitLogTool(workspaceDir, arguments);
+            case "git-blame" -> executeGitBlameTool(workspaceDir, arguments);
+            case "tree" -> executeTreeTool(workspaceDir, arguments);
+            case "branch-switcher" -> executeBranchSwitcherTool(workspaceDir, arguments);
+            default -> new ToolResult(false, -1, "",
+                    "Repository tool '" + tool + "' is not implemented");
+        };
+    }
+
+    private ToolResult executeBranchSwitcherTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "branch-switcher requires a branch name argument");
+        }
+
+        String firstArg = arguments.getFirst();
+        String requested = firstArg != null ? firstArg.strip() : "";
+        String branch = normalizeBranchName(requested);
+        if (branch == null || branch.isBlank()) {
+            return new ToolResult(false, -1, "", "branch-switcher requires a non-empty branch name");
+        }
+        if (!SIMPLE_BRANCH_NAME_PATTERN.matcher(branch).matches()) {
+            return new ToolResult(false, -1, "", "Invalid branch name");
+        }
+
+        ToolResult refCheck = executeCommand(workspaceDir,
+                new String[]{"git", "check-ref-format", "--branch", branch});
+        if (!refCheck.success()) {
+            return new ToolResult(false, refCheck.exitCode(), "",
+                    "Invalid branch name for git: " + branch);
+        }
+
+        ToolResult fetch = executeCommand(workspaceDir,
+                new String[]{"git", "fetch", "origin",
+                        "refs/heads/" + branch + ":refs/remotes/origin/" + branch});
+        if (!fetch.success()) {
+            return new ToolResult(false, fetch.exitCode(), "",
+                    "Failed to fetch branch '" + branch + "' from origin: "
+                            + normalizeToolMessage(fetch.output()));
+        }
+
+        ToolResult checkout = executeCommand(workspaceDir,
+                new String[]{"git", "checkout", "-B", branch, "refs/remotes/origin/" + branch});
+        if (!checkout.success()) {
+            return new ToolResult(false, checkout.exitCode(), "",
+                    "Failed to switch to branch '" + branch + "': "
+                            + normalizeToolMessage(checkout.output()));
+        }
+
+        ToolResult currentBranch = executeCommand(workspaceDir,
+                new String[]{"git", "rev-parse", "--abbrev-ref", "HEAD"});
+        if (!currentBranch.success()) {
+            return new ToolResult(false, currentBranch.exitCode(), "",
+                    "Failed to verify checked-out branch: " + normalizeToolMessage(currentBranch.output()));
+        }
+        String checkedOutBranch = normalizeToolMessage(currentBranch.output());
+        if (!branch.equals(checkedOutBranch)) {
+            return new ToolResult(false, -1, "",
+                    "Branch switch verification failed");
+        }
+
+        return new ToolResult(true, 0, "Switched workspace branch to: " + checkedOutBranch, "");
+    }
+
+    private String normalizeBranchName(String branchName) {
+        if (branchName == null || branchName.isBlank()) {
+            return null;
+        }
+        if (branchName.startsWith("refs/heads/")) {
+            return branchName.substring("refs/heads/".length());
+        }
+        return branchName;
+    }
+
+    private String normalizeToolMessage(String message) {
+        if (message == null || message.isBlank()) {
+            return "";
+        }
+        return message.replace('\n', ' ').replace('\r', ' ').strip();
+    }
+
+    /**
+     * Executes a file-modification tool (write-file, patch-file, mkdir, delete-file)
+     * in the given workspace.  Results are passed back to the AI but never posted as
+     * public issue comments.
+     *
+     * @param workspaceDir The workspace directory (cloned repo root)
+     * @param tool         One of the {@link #AVAILABLE_FILE_TOOLS}
+     * @param arguments    Tool-specific arguments
+     * @return The execution result
+     */
+    public ToolResult executeFileTool(Path workspaceDir, String tool, List<String> arguments) {
+        String normalizedTool = tool != null ? tool.strip().toLowerCase() : "";
+        if (!AVAILABLE_FILE_TOOLS.contains(normalizedTool)) {
+            return new ToolResult(false, -1, "",
+                    "File tool '" + tool + "' is not available. Available file tools: "
+                            + String.join(", ", AVAILABLE_FILE_TOOLS));
+        }
+        return switch (normalizedTool) {
+            case "write-file" -> executeWriteFileTool(workspaceDir, arguments);
+            case "patch-file" -> executePatchFileTool(workspaceDir, arguments);
+            case "mkdir"      -> executeMkdirTool(workspaceDir, arguments);
+            case "delete-file" -> executeDeleteFileTool(workspaceDir, arguments);
+            default -> new ToolResult(false, -1, "", "File tool '" + tool + "' is not implemented");
+        };
+    }
+
+    private ToolResult executeWriteFileTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.size() < 2) {
+            return new ToolResult(false, -1, "", "write-file requires two arguments: <path> <content>");
+        }
+        String relativePath = arguments.get(0);
+        String content      = arguments.get(1);
+        Path filePath;
+        try {
+            filePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        try {
+            Files.createDirectories(filePath.getParent());
+            Files.writeString(filePath, content, StandardCharsets.UTF_8);
+            log.info("write-file: wrote {} bytes to {}", content.length(), relativePath);
+            return new ToolResult(true, 0, "File written: " + relativePath, "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "write-file failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executePatchFileTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.size() < 3) {
+            return new ToolResult(false, -1, "",
+                    "patch-file requires three arguments: <path> <search-text> <replacement-text>");
+        }
+        String relativePath    = arguments.get(0);
+        String searchText      = arguments.get(1);
+        String replacementText = arguments.get(2);
+        Path filePath;
+        try {
+            filePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        if (!Files.isRegularFile(filePath)) {
+            return new ToolResult(false, 1, "", "patch-file: file not found: " + relativePath);
+        }
+        try {
+            String originalContent = Files.readString(filePath, StandardCharsets.UTF_8);
+            if (!originalContent.contains(searchText)) {
+                return new ToolResult(false, 1, "",
+                        "patch-file: search text not found in file: " + relativePath
+                                + ". Use `cat` to inspect the exact current content first.");
+            }
+            // Count occurrences to detect ambiguous patches — replacing >1 occurrence is
+            // almost always a mistake (e.g. duplicated method signatures, repeated imports).
+            int occurrences = countOccurrences(originalContent, searchText);
+            if (occurrences > 1) {
+                return new ToolResult(false, 1, "",
+                        "patch-file: search text matches " + occurrences + " locations in "
+                                + relativePath + " — the replacement would be ambiguous. "
+                                + "Provide a more specific search string that matches exactly once "
+                                + "(use `cat` to identify a unique surrounding context).");
+            }
+            String newContent = originalContent.replace(searchText, replacementText);
+            Files.writeString(filePath, newContent, StandardCharsets.UTF_8);
+            log.info("patch-file: patched {}", relativePath);
+            return new ToolResult(true, 0, "File patched: " + relativePath, "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "patch-file failed: " + e.getMessage());
+        }
+    }
+
+    /** Counts the number of non-overlapping occurrences of {@code needle} in {@code haystack}. */
+    private int countOccurrences(String haystack, String needle) {
+        int count = 0;
+        int idx   = 0;
+        while ((idx = haystack.indexOf(needle, idx)) != -1) {
+            count++;
+            idx += needle.length();
+        }
+        return count;
+    }
+
+    private ToolResult executeMkdirTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "mkdir requires a path argument");
+        }
+        String relativePath = arguments.getFirst();
+        Path dirPath;
+        try {
+            dirPath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        try {
+            Files.createDirectories(dirPath);
+            log.info("mkdir: created directory {}", relativePath);
+            return new ToolResult(true, 0, "Directory created: " + relativePath, "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "mkdir failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executeDeleteFileTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "delete-file requires a path argument");
+        }
+        String relativePath = arguments.getFirst();
+        Path filePath;
+        try {
+            filePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+        try {
+            boolean deleted = Files.deleteIfExists(filePath);
+            if (deleted) {
+                log.info("delete-file: deleted {}", relativePath);
+                return new ToolResult(true, 0, "File deleted: " + relativePath, "");
+            } else {
+                // Return a visible warning so the AI notices a potential path typo.
+                log.warn("delete-file: file did not exist: {}", relativePath);
+                return new ToolResult(true, 1,
+                        "Warning: file did not exist, nothing was deleted — verify the path: "
+                                + relativePath, "");
+            }
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "delete-file failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executeSearchTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "Search tool requires at least a pattern argument");
+        }
+
+        String patternText = arguments.getFirst();
+        String relativePath = arguments.size() > 1 ? arguments.get(1) : ".";
+        Path basePath;
+        try {
+            basePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+
+        if (!Files.exists(basePath)) {
+            return new ToolResult(false, 1, "", "Path not found: " + relativePath);
+        }
+
+        Pattern compiledPattern;
+        try {
+            compiledPattern = Pattern.compile(patternText);
+        } catch (PatternSyntaxException e) {
+            compiledPattern = Pattern.compile(Pattern.quote(patternText));
+        }
+        final Pattern pattern = compiledPattern;
+
+        List<String> matches = new ArrayList<>();
+        try (Stream<Path> stream = Files.walk(basePath, MAX_SEARCH_DEPTH)) {
+            List<Path> files = stream
+                    .filter(Files::isRegularFile)
+                    .filter(this::isReasonableTextFile)
+                    .sorted()
+                    .toList();
+
+            AtomicBoolean limitReached = new AtomicBoolean(false);
+            for (Path file : files) {
+                AtomicInteger lineNumber = new AtomicInteger(0);
+                try (Stream<String> lines = Files.lines(file, StandardCharsets.UTF_8)) {
+                    lines.forEachOrdered(line -> {
+                        int currentLine = lineNumber.incrementAndGet();
+                        if (!limitReached.get() && pattern.matcher(line).find()) {
+                            matches.add(workspaceDir.relativize(file) + ":" + currentLine + ": " + line);
+                            if (matches.size() >= MAX_SEARCH_MATCHES) {
+                                limitReached.set(true);
+                            }
+                        }
+                    });
+                }
+                if (limitReached.get()) {
+                    return new ToolResult(true, 0, truncateOutput(String.join("\n", matches)), "");
+                }
+            }
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "Search failed: " + e.getMessage());
+        }
+
+        String output = matches.isEmpty()
+                ? "No matches found for pattern: " + patternText
+                : String.join("\n", matches);
+        return new ToolResult(true, 0, truncateOutput(output), "");
+    }
+
+    private ToolResult executeFindTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "find requires a glob pattern");
+        }
+
+        String globPattern = arguments.getFirst();
+        String relativePath = arguments.size() > 1 ? arguments.get(1) : ".";
+        Path basePath;
+        try {
+            basePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+
+        if (!Files.exists(basePath)) {
+            return new ToolResult(false, 1, "", "Path not found: " + relativePath);
+        }
+
+        try (Stream<Path> stream = Files.walk(basePath)) {
+            List<String> matches = stream
+                    .filter(path -> !path.equals(basePath))
+                    .sorted()
+                    .map(workspaceDir::relativize)
+                    .map(Path::toString)
+                    .filter(path -> matchesGlob(path, globPattern))
+                    .toList();
+
+            String output = matches.isEmpty()
+                    ? "No files found for pattern: " + globPattern
+                    : String.join("\n", matches);
+            return new ToolResult(true, 0, truncateOutput(output), "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "find failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executeCatTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "cat requires a file path");
+        }
+
+        String relativePath = arguments.getFirst();
+        int startLine = 1;
+        int endLine = Integer.MAX_VALUE;
+        try {
+            if (arguments.size() > 1) {
+                startLine = Integer.parseInt(arguments.get(1));
+            }
+            if (arguments.size() > 2) {
+                endLine = Integer.parseInt(arguments.get(2));
+            }
+        } catch (NumberFormatException e) {
+            return new ToolResult(false, -1, "", "cat line arguments must be integers");
+        }
+
+        if (startLine < 1 || endLine < startLine) {
+            return new ToolResult(false, -1, "", "Invalid line range for cat");
+        }
+
+        Path filePath;
+        try {
+            filePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+
+        if (!Files.isRegularFile(filePath)) {
+            return new ToolResult(false, 1, "", "File not found: " + relativePath);
+        }
+
+        try {
+            List<String> lines = Files.readAllLines(filePath, StandardCharsets.UTF_8);
+            int lastLine = Math.min(endLine, lines.size());
+            StringBuilder output = new StringBuilder();
+            for (int i = startLine; i <= lastLine; i++) {
+                output.append(String.format("%d | %s%n", i, lines.get(i - 1)));
+            }
+            if (output.isEmpty()) {
+                output.append("No content in requested line range.");
+            }
+            return new ToolResult(true, 0, truncateOutput(output.toString().stripTrailing()), "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "cat failed: " + e.getMessage());
+        }
+    }
+
+    private ToolResult executeGitLogTool(Path workspaceDir, List<String> arguments) {
+        String relativePath = null;
+        int limit = DEFAULT_GIT_LOG_LIMIT;
+        if (arguments != null && !arguments.isEmpty()) {
+            if (arguments.size() == 1 && isInteger(arguments.getFirst())) {
+                limit = Integer.parseInt(arguments.getFirst());
+            } else {
+                relativePath = arguments.getFirst();
+                if (arguments.size() > 1 && isInteger(arguments.get(1))) {
+                    limit = Integer.parseInt(arguments.get(1));
+                }
+            }
+        }
+
+        List<String> command = new ArrayList<>(List.of(
+                "git", "log", "--date=short", "--pretty=format:%h %ad %an %s", "-n", String.valueOf(limit)));
+        if (relativePath != null && !relativePath.isBlank()) {
+            try {
+                resolveWorkspacePath(workspaceDir, relativePath);
+            } catch (IOException e) {
+                return new ToolResult(false, -1, "", e.getMessage());
+            }
+            command.add("--");
+            command.add(relativePath);
+        }
+        return executeCommand(workspaceDir, command.toArray(String[]::new));
+    }
+
+    private ToolResult executeGitBlameTool(Path workspaceDir, List<String> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return new ToolResult(false, -1, "", "git-blame requires a file path");
+        }
+
+        String relativePath = arguments.getFirst();
+        try {
+            resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+
+        List<String> command = new ArrayList<>(List.of("git", "blame"));
+        if (arguments.size() > 2 && isInteger(arguments.get(1)) && isInteger(arguments.get(2))) {
+            command.add("-L");
+            command.add(arguments.get(1) + "," + arguments.get(2));
+        }
+        command.add("--");
+        command.add(relativePath);
+        return executeCommand(workspaceDir, command.toArray(String[]::new));
+    }
+
+    private ToolResult executeTreeTool(Path workspaceDir, List<String> arguments) {
+        String relativePath = ".";
+        int maxDepth = 3;
+        if (arguments != null && !arguments.isEmpty()) {
+            if (arguments.size() == 1 && isInteger(arguments.getFirst())) {
+                maxDepth = Integer.parseInt(arguments.getFirst());
+            } else {
+                relativePath = arguments.getFirst();
+                if (arguments.size() > 1 && isInteger(arguments.get(1))) {
+                    maxDepth = Integer.parseInt(arguments.get(1));
+                }
+            }
+        }
+        maxDepth = Math.clamp(maxDepth, 1, MAX_TREE_DEPTH);
+
+        Path basePath;
+        try {
+            basePath = resolveWorkspacePath(workspaceDir, relativePath);
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", e.getMessage());
+        }
+
+        if (!Files.exists(basePath)) {
+            return new ToolResult(false, 1, "", "Path not found: " + relativePath);
+        }
+
+        try (Stream<Path> stream = Files.walk(basePath, maxDepth)) {
+            List<String> lines = stream
+                    .sorted(Comparator.naturalOrder())
+                    .map(path -> formatTreeEntry(basePath, path))
+                    .toList();
+            return new ToolResult(true, 0, truncateOutput(String.join("\n", lines)), "");
+        } catch (IOException e) {
+            return new ToolResult(false, -1, "", "tree failed: " + e.getMessage());
+        }
+    }
+
+    private String formatTreeEntry(Path basePath, Path path) {
+        Path relative = basePath.relativize(path);
+        int depth = relative.getNameCount();
+        String indent = depth <= 1 ? "" : "  ".repeat(depth - 1);
+        String name = depth == 0 ? basePath.getFileName().toString() : relative.getFileName().toString();
+        if (Files.isDirectory(path)) {
+            name += "/";
+        }
+        return indent + name;
+    }
+
+    private boolean matchesGlob(String path, String globPattern) {
+        String normalizedPath = path.replace('\\', '/');
+        String normalizedPattern = globPattern.replace('\\', '/');
+        if (!normalizedPattern.contains("/")) {
+            return Path.of(normalizedPath).getFileName().toString().matches(globToRegex(normalizedPattern));
+        }
+        return normalizedPath.matches(globToRegex(normalizedPattern));
+    }
+
+    private String globToRegex(String glob) {
+        StringBuilder regex = new StringBuilder("^");
+        for (char c : glob.toCharArray()) {
+            switch (c) {
+                case '*' -> regex.append(".*");
+                case '?' -> regex.append('.');
+                case '.' -> regex.append("\\.");
+                default -> regex.append(Pattern.quote(String.valueOf(c)));
+            }
+        }
+        regex.append('$');
+        return regex.toString();
+    }
+
+    private boolean isReasonableTextFile(Path path) {
+        try {
+            return Files.size(path) <= MAX_TEXT_FILE_SIZE_BYTES;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private boolean isInteger(String value) {
+        try {
+            Integer.parseInt(value);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private Path resolveWorkspacePath(Path workspaceDir, String relativePath) throws IOException {
+        // Stage 1: normalize() resolves any ".." segments without touching the filesystem.
+        Path normalized = workspaceDir.resolve(relativePath).normalize();
+        if (!normalized.startsWith(workspaceDir.normalize())) {
+            throw new IOException("Path escapes workspace: " + relativePath);
+        }
+        // Stage 2: if the target already exists, re-check after symlink resolution so that
+        // a symlink inside the workspace pointing outside is also caught.
+        if (Files.exists(normalized)) {
+            Path realBase = workspaceDir.toRealPath();
+            Path realPath = normalized.toRealPath();
+            if (!realPath.startsWith(realBase)) {
+                throw new IOException("Path escapes workspace via symlink: " + relativePath);
+            }
+        }
+        return normalized;
+    }
+
+    private ToolResult executeCommand(Path workspaceDir, String[] command) {
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
             pb.directory(workspaceDir.toFile());
@@ -136,16 +699,15 @@ public class ToolExecutionService {
 
             Process process = pb.start();
 
-            // Capture output
             StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     output.append(line).append("\n");
                 }
             }
 
-            // Wait for process with timeout
             int timeoutSeconds = agentConfig.getValidation().getToolTimeoutSeconds();
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
 
@@ -158,125 +720,29 @@ public class ToolExecutionService {
             int exitCode = process.exitValue();
             boolean success = exitCode == 0;
 
-            log.info("Tool {} with exit code {}", success ? "succeeded" : "failed", exitCode);
+            log.info("Tool {} with exit code {}",
+                    success ? "succeeded" : "failed", exitCode);
 
-            // Truncate output if too long
-            String outputStr = output.toString();
-            if (outputStr.length() > 10000) {
-                outputStr = outputStr.substring(0, 10000) + "\n... (output truncated)";
-            }
-
-            return new ToolResult(success, exitCode, outputStr, "");
+            return new ToolResult(success, exitCode, truncateOutput(output.toString()), "");
 
         } catch (IOException e) {
             log.error("Failed to execute tool: {}", e.getMessage());
-            return new ToolResult(false, -1, "", "Failed to execute tool: " + e.getMessage());
+            return new ToolResult(false, -1, "",
+                    "Failed to execute tool: " + e.getMessage());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new ToolResult(false, -1, "", "Tool execution interrupted");
+            return new ToolResult(false, -1, "",
+                    "Tool execution interrupted");
         }
     }
 
-    /**
-     * Cleans up a workspace directory.
-     */
-    public void cleanupWorkspace(Path workspaceDir) {
-        if (workspaceDir != null) {
-            try {
-                deleteDirectory(workspaceDir);
-                log.debug("Cleaned up workspace: {}", workspaceDir);
-            } catch (IOException e) {
-                log.warn("Failed to clean up workspace {}: {}", workspaceDir, e.getMessage());
-            }
+    private String truncateOutput(String output) {
+        if (output == null) {
+            return "";
         }
-    }
-
-    private String buildCloneUrl(String owner, String repo, String cloneBaseUrl, String token) {
-        // Preserve the original protocol (http or https)
-        String protocol = cloneBaseUrl.startsWith("https://") ? "https" : "http";
-        String baseUrl = cloneBaseUrl.replaceFirst("https?://", "");
-
-        // Remove trailing slash if present
-        if (baseUrl.endsWith("/")) {
-            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        if (output.length() <= MAX_TOOL_OUTPUT_CHARS) {
+            return output;
         }
-
-        // Use oauth2:TOKEN format — this works for GitLab, GitHub, Gitea, and Bitbucket.
-        // Using just TOKEN@host makes Git treat it as a username and prompt for a password.
-        return String.format("%s://oauth2:%s@%s/%s/%s.git", protocol, token, baseUrl, owner, repo);
-    }
-
-    private CommandResult runCommand(File workDir, String[] command, int timeoutSeconds) {
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.directory(workDir);
-            pb.redirectErrorStream(true);
-
-            Process process = pb.start();
-
-            // Capture output
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
-
-            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                return new CommandResult(false, "Command timed out after " + timeoutSeconds + " seconds");
-            }
-
-            boolean success = process.exitValue() == 0;
-            return new CommandResult(success, output.toString());
-        } catch (IOException | InterruptedException e) {
-            log.error("Failed to run command: {}", e.getMessage());
-            return new CommandResult(false, "Exception: " + e.getMessage());
-        }
-    }
-
-    private record CommandResult(boolean success, String output) {}
-
-    private void deleteDirectory(Path dir) throws IOException {
-        if (Files.exists(dir)) {
-            try (var stream = Files.walk(dir)) {
-                stream.sorted(Comparator.reverseOrder())
-                        .forEach(path -> {
-                            try {
-                                Files.delete(path);
-                            } catch (IOException e) {
-                                log.warn("Failed to delete {}: {}", path, e.getMessage());
-                            }
-                        });
-            }
-        }
-    }
-
-    /**
-     * Result of a tool execution.
-     */
-    public record ToolResult(
-            boolean success,
-            int exitCode,
-            String output,
-            String error
-    ) {
-        /**
-         * Formats the result for sending to the AI.
-         */
-        public String formatForAi() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("Exit code: ").append(exitCode).append("\n");
-            if (!error.isEmpty()) {
-                sb.append("Error: ").append(error).append("\n");
-            }
-            if (!output.isEmpty()) {
-                sb.append("Output:\n```\n").append(output).append("```\n");
-            }
-            return sb.toString();
-        }
+        return output.substring(0, MAX_TOOL_OUTPUT_CHARS) + "\n... (output truncated)";
     }
 }
-

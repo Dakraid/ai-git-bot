@@ -10,14 +10,14 @@ import java.util.Optional;
 @Repository
 public interface AgentSessionRepository extends JpaRepository<AgentSession, Long> {
 
-    @Query("SELECT s FROM AgentSession s LEFT JOIN FETCH s.messages LEFT JOIN FETCH s.fileChanges " +
+    @Query("SELECT s FROM AgentSession s LEFT JOIN FETCH s.messages " +
            "WHERE s.repoOwner = :owner AND s.repoName = :repo AND s.issueNumber = :issueNumber")
     Optional<AgentSession> findByRepoOwnerAndRepoNameAndIssueNumber(
             @Param("owner") String repoOwner,
             @Param("repo") String repoName,
             @Param("issueNumber") Long issueNumber);
 
-    @Query("SELECT s FROM AgentSession s LEFT JOIN FETCH s.messages LEFT JOIN FETCH s.fileChanges " +
+    @Query("SELECT s FROM AgentSession s LEFT JOIN FETCH s.messages " +
            "WHERE s.repoOwner = :owner AND s.repoName = :repo AND s.prNumber = :prNumber")
     Optional<AgentSession> findByRepoOwnerAndRepoNameAndPrNumber(
             @Param("owner") String repoOwner,

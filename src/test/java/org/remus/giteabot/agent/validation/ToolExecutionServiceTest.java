@@ -3,156 +3,224 @@ package org.remus.giteabot.agent.validation;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.remus.giteabot.agent.DiffApplyService;
-import org.remus.giteabot.agent.model.FileChange;
+import org.remus.giteabot.config.AgentConfigProperties;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ToolExecutionServiceTest {
 
-    private DiffApplyService diffApplyService;
+    private ToolExecutionService service;
 
     @TempDir
     Path tempDir;
 
     @BeforeEach
     void setUp() {
-        diffApplyService = new DiffApplyService();
+        service = new ToolExecutionService(new AgentConfigProperties());
     }
 
     @Test
-    void prepareWorkspace_withDiffBasedUpdate_appliesDiffCorrectly() throws IOException {
-        // Given: A repository with an existing file
-        Path repoDir = tempDir.resolve("repo");
-        Files.createDirectories(repoDir);
+    void getAvailableContextTools_containsExpectedTools() {
+        assertThat(service.getAvailableContextTools())
+                .contains("rg", "grep", "find", "cat", "git-log", "git-blame", "tree", "branch-switcher");
+    }
 
-        // Simulate an existing file in the cloned repo
-        Path existingFile = repoDir.resolve("src/main/java/Task.java");
-        Files.createDirectories(existingFile.getParent());
-        String originalContent = """
-                package com.example;
-                
-                public class Task {
-                    private Long id;
-                    private String title;
+    @Test
+    void executeContextTool_branchSwitcher_invalidBranchName_returnsFailure() {
+        ToolResult result = service.executeContextTool(tempDir, "branch-switcher", List.of("../main"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("Invalid branch name");
+    }
+
+    @Test
+    void executeContextTool_branchSwitcher_missingArgs_returnsFailure() {
+        ToolResult result = service.executeContextTool(tempDir, "branch-switcher", List.of());
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("requires a branch name argument");
+    }
+
+    @Test
+    void executeContextTool_branchSwitcher_blankBranch_returnsFailure() {
+        ToolResult result = service.executeContextTool(tempDir, "branch-switcher", List.of("   "));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("requires a non-empty branch name");
+    }
+
+    @Test
+    void executeContextTool_cat_readsRequestedRangeWithLineNumbers() throws IOException {
+        Path file = tempDir.resolve("src/Main.java");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, """
+                line 1
+                line 2
+                line 3
+                """);
+
+        ToolResult result = service.executeContextTool(tempDir, "cat", List.of("src/Main.java", "2", "3"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).contains("2 | line 2");
+        assertThat(result.output()).contains("3 | line 3");
+        assertThat(result.output()).doesNotContain("1 | line 1");
+    }
+
+    @Test
+    void executeContextTool_rg_searchesWorkspace() throws IOException {
+        Path file = tempDir.resolve("src/Config.java");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, """
+                class Config {
+                    private ConfigService service;
                 }
-                """;
-        Files.writeString(existingFile, originalContent);
+                """);
 
-        // A diff-based update that adds an assignee field
-        String diff = """
-                <<<<<<< SEARCH
-                    private Long id;
-                    private String title;
-                =======
-                    private Long id;
-                    private String title;
-                    private String assignee;
-                >>>>>>> REPLACE
-                """;
+        ToolResult result = service.executeContextTool(tempDir, "rg", List.of("ConfigService", "src"));
 
-        FileChange change = FileChange.builder()
-                .path("src/main/java/Task.java")
-                .operation(FileChange.Operation.UPDATE)
-                .diff(diff)
-                .content("") // Empty content because it's diff-based
-                .build();
-
-        // When: We apply the diff manually (simulating what prepareWorkspace does internally)
-        assertThat(change.isDiffBased()).isTrue();
-        String newContent = diffApplyService.applyDiff(originalContent, diff);
-
-        // Then: The diff should be applied correctly, not writing empty content
-        assertThat(newContent).contains("private String assignee;");
-        assertThat(newContent).contains("private Long id;");
-        assertThat(newContent).contains("private String title;");
-        assertThat(newContent).isNotEmpty();
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).contains("src/Config.java:2:     private ConfigService service;");
     }
 
     @Test
-    void prepareWorkspace_withContentBasedUpdate_writesContent() {
-        // Given: A full content update (not diff-based)
-        String newContent = """
-                package com.example;
-                
-                public class Task {
-                    private Long id;
-                    private String title;
-                    private String assignee;
-                }
-                """;
+    void executeContextTool_find_matchesGlobPattern() throws IOException {
+        Files.createDirectories(tempDir.resolve("src"));
+        Files.writeString(tempDir.resolve("src/app.yml"), "name: app");
+        Files.writeString(tempDir.resolve("src/Config.java"), "class Config {}");
 
-        FileChange change = FileChange.builder()
-                .path("src/main/java/Task.java")
-                .operation(FileChange.Operation.UPDATE)
-                .content(newContent)
-                .diff(null) // No diff, full content replacement
-                .build();
+        ToolResult result = service.executeContextTool(tempDir, "find", List.of("*.yml", "src"));
 
-        // Then: isDiffBased should be false
-        assertThat(change.isDiffBased()).isFalse();
-        assertThat(change.getContent()).isNotEmpty();
-        assertThat(change.getContent()).contains("private String assignee;");
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).contains("src/app.yml");
+    }
+
+    // ---- File tool tests ----
+
+    @Test
+    void executeFileTool_writeFile_createsFileWithContent() throws IOException {
+        ToolResult result = service.executeFileTool(tempDir, "write-file",
+                List.of("src/main/Foo.java", "public class Foo {}"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).contains("src/main/Foo.java");
+        assertThat(Files.readString(tempDir.resolve("src/main/Foo.java"))).isEqualTo("public class Foo {}");
     }
 
     @Test
-    void prepareWorkspace_withCreateOperation_writesFullContent() {
-        String content = """
-                package com.example;
-                
-                public class NewClass {
-                }
-                """;
+    void executeFileTool_writeFile_overwritesExistingFile() throws IOException {
+        Path target = tempDir.resolve("Existing.java");
+        Files.writeString(target, "old content");
 
-        FileChange change = FileChange.builder()
-                .path("src/main/java/NewClass.java")
-                .operation(FileChange.Operation.CREATE)
-                .content(content)
-                .build();
+        ToolResult result = service.executeFileTool(tempDir, "write-file",
+                List.of("Existing.java", "new content"));
 
-        assertThat(change.isDiffBased()).isFalse();
-        assertThat(change.getContent()).isEqualTo(content);
+        assertThat(result.success()).isTrue();
+        assertThat(Files.readString(target)).isEqualTo("new content");
     }
 
     @Test
-    void fileChange_isDiffBased_returnsTrueWhenDiffIsSet() {
-        FileChange diffBased = FileChange.builder()
-                .path("test.java")
-                .operation(FileChange.Operation.UPDATE)
-                .diff("<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE")
-                .content("")
-                .build();
+    void executeFileTool_patchFile_replacesExactText() throws IOException {
+        Path target = tempDir.resolve("Service.java");
+        Files.writeString(target, "class Service {\n    private int x = 1;\n}\n");
 
-        FileChange contentBased = FileChange.builder()
-                .path("test.java")
-                .operation(FileChange.Operation.UPDATE)
-                .content("new content")
-                .diff(null)
-                .build();
+        ToolResult result = service.executeFileTool(tempDir, "patch-file",
+                List.of("Service.java", "private int x = 1;", "private int x = 42;"));
 
-        assertThat(diffBased.isDiffBased()).isTrue();
-        assertThat(contentBased.isDiffBased()).isFalse();
+        assertThat(result.success()).isTrue();
+        assertThat(Files.readString(target)).contains("private int x = 42;");
     }
 
     @Test
-    void fileChange_isDiffBased_returnsFalseForEmptyDiff() {
-        FileChange emptyDiff = FileChange.builder()
-                .path("test.java")
-                .operation(FileChange.Operation.UPDATE)
-                .diff("")
-                .content("some content")
-                .build();
+    void executeFileTool_patchFile_searchTextNotFound_returnsFailure() throws IOException {
+        Path target = tempDir.resolve("Service.java");
+        Files.writeString(target, "class Service {}");
 
-        assertThat(emptyDiff.isDiffBased()).isFalse();
+        ToolResult result = service.executeFileTool(tempDir, "patch-file",
+                List.of("Service.java", "does not exist", "replacement"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("search text not found");
+    }
+
+    @Test
+    void executeFileTool_mkdir_createsDirectory() {
+        ToolResult result = service.executeFileTool(tempDir, "mkdir",
+                List.of("new/nested/dir"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(Files.isDirectory(tempDir.resolve("new/nested/dir"))).isTrue();
+    }
+
+    @Test
+    void executeFileTool_deleteFile_removesFile() throws IOException {
+        Path target = tempDir.resolve("ToDelete.java");
+        Files.writeString(target, "delete me");
+
+        ToolResult result = service.executeFileTool(tempDir, "delete-file",
+                List.of("ToDelete.java"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(Files.exists(target)).isFalse();
+    }
+
+    @Test
+    void executeFileTool_deleteFile_nonexistent_returnsSuccess() {
+        ToolResult result = service.executeFileTool(tempDir, "delete-file",
+                List.of("DoesNotExist.java"));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.output()).contains("did not exist");
+    }
+
+    @Test
+    void executeFileTool_pathTraversal_returnsError() {
+        ToolResult result = service.executeFileTool(tempDir, "write-file",
+                List.of("../../etc/passwd", "evil content"));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.error()).contains("escapes");
+    }
+
+    @Test
+    void isFileTool_returnsCorrectly() {
+        assertThat(service.isFileTool("write-file")).isTrue();
+        assertThat(service.isFileTool("patch-file")).isTrue();
+        assertThat(service.isFileTool("mkdir")).isTrue();
+        assertThat(service.isFileTool("delete-file")).isTrue();
+        assertThat(service.isFileTool("mvn")).isFalse();
+        assertThat(service.isFileTool("rg")).isFalse();
+        assertThat(service.isFileTool(null)).isFalse();
+    }
+
+    @Test
+    void isSilentTool_fileToolsAreSilent() {
+        assertThat(service.isSilentTool("write-file")).isTrue();
+        assertThat(service.isSilentTool("cat")).isTrue();
+        assertThat(service.isSilentTool("mvn")).isFalse();
+    }
+
+    @Test
+    void isValidationTool_recognizesConfiguredTools() {
+        // mvn is in the configured available-tools list (set up via agentConfig in setUp)
+        assertThat(service.isValidationTool("mvn")).isTrue();
+        // file and context tools are NOT validation tools
+        assertThat(service.isValidationTool("write-file")).isFalse();
+        assertThat(service.isValidationTool("cat")).isFalse();
+        assertThat(service.isValidationTool("rg")).isFalse();
+        assertThat(service.isValidationTool(null)).isFalse();
+    }
+
+    @Test
+    void isValidationTool_notEquivalentToNotSilentTool() {
+        // An unknown tool that is also not in the silent lists must NOT count as a validation tool.
+        // Previously '!isSilentTool' was used which would incorrectly classify unknown tools.
+        assertThat(service.isSilentTool("unknown-tool")).isFalse();    // not silent
+        assertThat(service.isValidationTool("unknown-tool")).isFalse(); // but also not a validation tool
     }
 }
-
-
-
-
-
-
