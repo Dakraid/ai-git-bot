@@ -52,7 +52,7 @@ Remove all AI and Gitea environment variables. Only database, encryption, and ge
 version: '3.8'
 services:
   bot:
-    image: tmseidel/ai-gitea-bot:1.1.0
+    image: dakraid/ai-git-bot:1.1.0
     environment:
       DATABASE_URL: jdbc:postgresql://db:5432/giteabot
       DATABASE_USERNAME: giteabot

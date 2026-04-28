@@ -188,7 +188,7 @@ The bot fetches the files and runs the tools, then asks the AI to continue with 
 ```yaml
 services:
   app:
-    image: ai-gitea-bot:latest
+    image: dakraid/ai-git-bot:latest
     environment:
       GITEA_URL: https://your-gitea-instance.com
       GITEA_TOKEN: your-gitea-api-token

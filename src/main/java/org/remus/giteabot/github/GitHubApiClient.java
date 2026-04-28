@@ -281,6 +281,20 @@ public class GitHubApiClient implements RepositoryApiClient {
     }
 
     @Override
+    public void updatePullRequest(String owner, String repo, Long pullNumber, String title, String body) {
+        log.info("Updating pull request #{} in {}/{}", pullNumber, owner, repo);
+        Map<String, Object> request = new java.util.LinkedHashMap<>();
+        request.put("title", title);
+        request.put("body", body != null ? body : "");
+        restClient.patch()
+                .uri("/repos/{owner}/{repo}/pulls/{pull_number}", owner, repo, pullNumber)
+                .body(request)
+                .retrieve()
+                .toBodilessEntity();
+        log.info("Pull request #{} updated successfully", pullNumber);
+    }
+
+    @Override
     public void deleteBranch(String owner, String repo, String branchName) {
         log.info("Deleting branch '{}' in {}/{}", branchName, owner, repo);
         try {

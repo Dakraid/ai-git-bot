@@ -38,7 +38,7 @@ Then:
 ```yaml
 services:
   app:
-    image: tmseidel/ai-git-bot:latest
+    image: dakraid/ai-git-bot:latest
     ports:
       - "8080:8080"
     environment:
@@ -139,15 +139,15 @@ Built-in health check runs every 30s with a 30s start period.
 
 ## Source Code & Documentation
 
-- [GitHub Repository](https://github.com/tmseidel/anthropic-gitea-bot)
-- [User Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/USER_GUIDE.md)
-- [Architecture](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/ARCHITECTURE.md)
-- [Agent Documentation](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/AGENT.md)
-- [Gitea Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITEA_SETUP.md)
-- [GitHub Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITHUB_SETUP.md)
-- [GitLab Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/GITLAB_SETUP.md)
-- [Bitbucket Setup Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/BITBUCKET_SETUP.md)
-- [Deployment Guide](https://github.com/tmseidel/anthropic-gitea-bot/blob/main/doc/DEPLOYMENT.md)
+- [GitHub Repository](https://github.com/Dakraid/ai-git-bot)
+- [User Guide](https://github.com/Dakraid/ai-git-bot/blob/main/doc/USER_GUIDE.md)
+- [Architecture](https://github.com/Dakraid/ai-git-bot/blob/main/doc/ARCHITECTURE.md)
+- [Agent Documentation](https://github.com/Dakraid/ai-git-bot/blob/main/doc/AGENT.md)
+- [Gitea Setup Guide](https://github.com/Dakraid/ai-git-bot/blob/main/doc/GITEA_SETUP.md)
+- [GitHub Setup Guide](https://github.com/Dakraid/ai-git-bot/blob/main/doc/GITHUB_SETUP.md)
+- [GitLab Setup Guide](https://github.com/Dakraid/ai-git-bot/blob/main/doc/GITLAB_SETUP.md)
+- [Bitbucket Setup Guide](https://github.com/Dakraid/ai-git-bot/blob/main/doc/BITBUCKET_SETUP.md)
+- [Deployment Guide](https://github.com/Dakraid/ai-git-bot/blob/main/doc/DEPLOYMENT.md)
 
 ## License
 

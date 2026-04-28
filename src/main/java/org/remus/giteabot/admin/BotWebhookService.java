@@ -94,6 +94,20 @@ public class BotWebhookService {
     }
 
     /**
+     * Generates and applies PR title/description metadata from a /gen command.
+     * Delegates to {@link CodeReviewService#generatePrTitleAndDescription(WebhookPayload, String)}.
+     */
+    @Async
+    public void generatePrTitleAndDescription(Bot bot, WebhookPayload payload) {
+        try {
+            createCodeReviewService(bot).generatePrTitleAndDescription(payload, null);
+        } catch (Exception e) {
+            log.error("[Bot '{}'] Failed to generate PR metadata: {}", bot.getName(), e.getMessage(), e);
+            botService.recordError(bot, e.getMessage());
+        }
+    }
+
+    /**
      * Handles a comment on a PR discussion thread.
      * <p>
      * Routes to the agent when an agent session exists for the PR (i.e. the PR was created by the

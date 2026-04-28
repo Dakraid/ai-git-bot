@@ -1,10 +1,10 @@
 # AI-Git-Bot
 
-[![License: MIT](https://img.shields.io/github/license/tmseidel/ai-git-bot)](LICENSE)
-[![Docker Pulls](https://img.shields.io/docker/pulls/tmseidel/ai-git-bot)](https://hub.docker.com/r/tmseidel/ai-git-bot)
-[![GitHub release](https://img.shields.io/github/v/release/tmseidel/ai-git-bot)](https://github.com/tmseidel/ai-git-bot/releases)
-[![GitHub stars](https://img.shields.io/github/stars/tmseidel/ai-git-bot)](https://github.com/tmseidel/ai-git-bot/stargazers)
-[![GitHub issues](https://img.shields.io/github/issues/tmseidel/ai-git-bot)](https://github.com/tmseidel/ai-git-bot/issues)
+[![License: MIT](https://img.shields.io/github/license/Dakraid/ai-git-bot)](LICENSE)
+[![Docker Pulls](https://img.shields.io/docker/pulls/dakraid/ai-git-bot)](https://hub.docker.com/r/dakraid/ai-git-bot)
+[![GitHub release](https://img.shields.io/github/v/release/Dakraid/ai-git-bot)](https://github.com/Dakraid/ai-git-bot/releases)
+[![GitHub stars](https://img.shields.io/github/stars/Dakraid/ai-git-bot)](https://github.com/Dakraid/ai-git-bot/stargazers)
+[![GitHub issues](https://img.shields.io/github/issues/Dakraid/ai-git-bot)](https://github.com/Dakraid/ai-git-bot/issues)
 
 > **Your intelligent gateway between Git and AI — Half Bot, half Agent.** 🤖🧠
 
@@ -168,12 +168,12 @@ All configuration is managed through a **web-based UI** — no environment varia
 
 ## Docker
 
-The bot is available as a Docker image on [Docker Hub](https://hub.docker.com/r/tmseidel/anthropic-gitea-bot).
+The bot is available as a Docker image on [Docker Hub](https://hub.docker.com/r/dakraid/ai-git-bot).
 
 ```yaml
 services:
   app:
-    image: tmseidel/ai-git-bot:latest
+    image: dakraid/ai-git-bot:latest
     ports:
       - "8080:8080"
     environment:

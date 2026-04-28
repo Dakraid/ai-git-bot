@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Handler for Gitea webhook events.
@@ -20,6 +21,8 @@ import java.util.Map;
 @Slf4j
 @Component
 public class GiteaWebhookHandler {
+
+    private static final Pattern GEN_COMMAND = Pattern.compile("(^|\\s)/gen(?=\\s|$)");
 
     private final BotWebhookService botWebhookService;
 
@@ -206,6 +209,11 @@ public class GiteaWebhookHandler {
                 return ResponseEntity.ok("ignored");
             }
             String body = payload.getComment().getBody();
+            boolean isPrComment = payload.getPullRequest() != null || payload.getIssue().getPullRequest() != null;
+            if (isPrComment && containsGenCommand(body)) {
+                botWebhookService.generatePrTitleAndDescription(bot, payload);
+                return ResponseEntity.ok("generation triggered");
+            }
             if (body == null || !body.contains(botAlias)) {
                 log.debug("Issue comment {} does not mention bot alias '{}', ignoring",
                         payload.getComment().getId(), botAlias);
@@ -253,13 +261,27 @@ public class GiteaWebhookHandler {
             return ResponseEntity.ok("session closed");
         }
 
+        boolean generationTriggered = containsGenCommand(payload.getPullRequest().getBody());
+
         if ("opened".equals(action) || "synchronized".equals(action)) {
             botWebhookService.reviewPullRequest(bot, payload);
+            if (generationTriggered) {
+                botWebhookService.generatePrTitleAndDescription(bot, payload);
+            }
             return ResponseEntity.ok("review triggered");
+        }
+
+        if (generationTriggered) {
+            botWebhookService.generatePrTitleAndDescription(bot, payload);
+            return ResponseEntity.ok("generation triggered");
         }
 
         log.debug("Unhandled Gitea PR action '{}', ignoring", action);
         return ResponseEntity.ok("ignored");
+    }
+
+    private boolean containsGenCommand(String body) {
+        return body != null && GEN_COMMAND.matcher(body).find();
     }
 }
 

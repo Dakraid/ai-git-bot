@@ -104,5 +104,7 @@ public interface RepositoryApiClient {
     Long createPullRequest(String owner, String repo, String title, String body,
                            String head, String base);
 
+    void updatePullRequest(String owner, String repo, Long pullNumber, String title, String body);
+
     void deleteBranch(String owner, String repo, String branchName);
 }

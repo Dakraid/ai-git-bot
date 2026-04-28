@@ -25,6 +25,9 @@ public class WebhookPayload {
 
     private Owner sender;
 
+    @JsonProperty("requested_reviewer")
+    private Owner requestedReviewer;
+
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PullRequest {

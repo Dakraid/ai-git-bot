@@ -10,6 +10,7 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Handler for GitLab webhook events.
@@ -24,6 +25,8 @@ import java.util.Map;
 @Slf4j
 @Component
 public class GitLabWebhookHandler {
+
+    private static final Pattern GEN_COMMAND = Pattern.compile("(^|\\s)/gen(?=\\s|$)");
 
     private final BotWebhookService botWebhookService;
 
@@ -84,11 +87,19 @@ public class GitLabWebhookHandler {
             case "open" -> {
                 webhookPayload.setAction("opened");
                 botWebhookService.reviewPullRequest(bot, webhookPayload);
+                if (webhookPayload.getPullRequest() != null
+                        && containsGenCommand(webhookPayload.getPullRequest().getBody())) {
+                    botWebhookService.generatePrTitleAndDescription(bot, webhookPayload);
+                }
                 yield ResponseEntity.ok("review triggered");
             }
             case "update" -> {
                 webhookPayload.setAction("synchronized");
                 botWebhookService.reviewPullRequest(bot, webhookPayload);
+                if (webhookPayload.getPullRequest() != null
+                        && containsGenCommand(webhookPayload.getPullRequest().getBody())) {
+                    botWebhookService.generatePrTitleAndDescription(bot, webhookPayload);
+                }
                 yield ResponseEntity.ok("review triggered");
             }
             case "close", "merge" -> {
@@ -115,7 +126,9 @@ public class GitLabWebhookHandler {
         String noteBody = (String) attrs.get("note");
         String botAlias = botWebhookService.getBotAlias(bot);
 
-        if (noteBody == null || !noteBody.contains(botAlias)) {
+        boolean hasGenCommand = containsGenCommand(noteBody);
+        if ((noteBody == null || !noteBody.contains(botAlias))
+                && !(hasGenCommand && "MergeRequest".equals(noteableType))) {
             return ResponseEntity.ok("ignored");
         }
 
@@ -140,6 +153,11 @@ public class GitLabWebhookHandler {
         // Ignore events from the bot itself
         if (botWebhookService.isBotUser(bot, webhookPayload)) {
             return ResponseEntity.ok("ignored");
+        }
+
+        if (containsGenCommand(webhookPayload.getComment() != null ? webhookPayload.getComment().getBody() : null)) {
+            botWebhookService.generatePrTitleAndDescription(bot, webhookPayload);
+            return ResponseEntity.ok("generation triggered");
         }
 
         // Check if this is an inline comment (has position info)
@@ -466,5 +484,9 @@ public class GitLabWebhookHandler {
             return n.longValue();
         }
         return null;
+    }
+
+    private boolean containsGenCommand(String body) {
+        return body != null && GEN_COMMAND.matcher(body).find();
     }
 }

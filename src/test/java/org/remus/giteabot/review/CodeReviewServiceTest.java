@@ -397,6 +397,56 @@ class CodeReviewServiceTest {
         verify(repositoryClient, never()).addReaction(anyString(), anyString(), anyLong(), anyString());
     }
 
+    @Test
+    void generatePrTitleAndDescription_parsesStrictOutputAndUpdatesPr() {
+        WebhookPayload payload = createTestPayload();
+        when(promptService.getSystemPrompt("metadata")).thenReturn("test prompt");
+        when(repositoryClient.getPullRequestDiff("testowner", "testrepo", 1L))
+                .thenReturn("diff --git a/file.txt b/file.txt\n+feature");
+        when(aiClient.chat(anyList(), contains("Generate a concise pull request title"),
+                eq("test prompt"), isNull()))
+                .thenReturn("TITLE: Add webhook generation\nDESCRIPTION:\nCollectively summarizes the PR changes.");
+
+        codeReviewService.generatePrTitleAndDescription(payload, "metadata");
+
+        verify(repositoryClient).updatePullRequest("testowner", "testrepo", 1L,
+                "Add webhook generation", "Collectively summarizes the PR changes.");
+        verify(repositoryClient).postReviewComment(eq("testowner"), eq("testrepo"), eq(1L),
+                contains("Updated PR title and description"));
+    }
+
+    @Test
+    void generatePrTitleAndDescription_whenDiffEmpty_stillUsesPrContext() {
+        WebhookPayload payload = createTestPayload();
+        when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
+        when(repositoryClient.getPullRequestDiff("testowner", "testrepo", 1L)).thenReturn("");
+        when(aiClient.chat(anyList(), contains("Original title: Test PR"), eq("test prompt"), isNull()))
+                .thenReturn("TITLE: Improve metadata fallback\nDESCRIPTION: Uses PR title and body when no diff is available.");
+
+        codeReviewService.generatePrTitleAndDescription(payload, null);
+
+        verify(repositoryClient).updatePullRequest("testowner", "testrepo", 1L,
+                "Improve metadata fallback", "Uses PR title and body when no diff is available.");
+    }
+
+    @Test
+    void generatePrTitleAndDescription_whenOutputCannotBeParsed_postsDraftCommentOnly() {
+        WebhookPayload payload = createTestPayload();
+        when(promptService.getSystemPrompt(isNull())).thenReturn("test prompt");
+        when(repositoryClient.getPullRequestDiff("testowner", "testrepo", 1L))
+                .thenReturn("diff --git a/file.txt b/file.txt\n+feature");
+        when(aiClient.chat(anyList(), anyString(), eq("test prompt"), isNull()))
+                .thenReturn("Here is a nice title without strict labels");
+
+        codeReviewService.generatePrTitleAndDescription(payload, null);
+
+        verify(repositoryClient, never()).updatePullRequest(anyString(), anyString(), anyLong(), anyString(), anyString());
+        verify(repositoryClient).postReviewComment(eq("testowner"), eq("testrepo"), eq(1L),
+                contains("could not safely parse"));
+        verify(repositoryClient).postReviewComment(eq("testowner"), eq("testrepo"), eq(1L),
+                contains("Here is a nice title without strict labels"));
+    }
+
     private WebhookPayload createTestPayload() {
         WebhookPayload payload = new WebhookPayload();
         payload.setAction("opened");

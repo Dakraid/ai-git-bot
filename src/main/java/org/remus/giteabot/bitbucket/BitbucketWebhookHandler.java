@@ -8,6 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Handler for Bitbucket Cloud webhook events.
@@ -24,6 +25,8 @@ import java.util.Map;
 @Slf4j
 @Component
 public class BitbucketWebhookHandler {
+
+    private static final Pattern GEN_COMMAND = Pattern.compile("(^|\\s)/gen(?=\\s|$)");
 
     private final BotWebhookService botWebhookService;
 
@@ -80,6 +83,9 @@ public class BitbucketWebhookHandler {
 
     private ResponseEntity<String> handlePullRequestOpenedOrUpdated(Bot bot, WebhookPayload payload) {
         botWebhookService.reviewPullRequest(bot, payload);
+        if (payload.getPullRequest() != null && containsGenCommand(payload.getPullRequest().getBody())) {
+            botWebhookService.generatePrTitleAndDescription(bot, payload);
+        }
         return ResponseEntity.ok("review triggered");
     }
 
@@ -91,6 +97,10 @@ public class BitbucketWebhookHandler {
     private ResponseEntity<String> handlePullRequestComment(Bot bot, WebhookPayload payload,
                                                              String botAlias) {
         String body = payload.getComment() != null ? payload.getComment().getBody() : null;
+        if (containsGenCommand(body)) {
+            botWebhookService.generatePrTitleAndDescription(bot, payload);
+            return ResponseEntity.ok("generation triggered");
+        }
         if (body == null || !body.contains(botAlias)) {
             return ResponseEntity.ok("ignored");
         }
@@ -277,6 +287,10 @@ public class BitbucketWebhookHandler {
             return n.longValue();
         }
         return null;
+    }
+
+    private boolean containsGenCommand(String body) {
+        return body != null && GEN_COMMAND.matcher(body).find();
     }
 }
 

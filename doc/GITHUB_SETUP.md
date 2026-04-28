@@ -42,7 +42,7 @@ The bot needs read/write access to repositories where it should perform code rev
 The bot needs at minimum:
 - **Read** access to pull requests and code
 - **Write** access to issues/comments (for posting reviews and reactions)
-- **Write** access to pull requests (for posting reviews)
+- **Write** access to pull requests (for posting reviews and updating PR title/description via `/gen`)
 
 ## 3. Create a Personal Access Token (PAT)
 
@@ -99,7 +99,7 @@ Webhooks tell GitHub to notify the bot when pull request events occur. Each bot 
    - **Content type:** `application/json`
    - **Secret:** (leave empty — authentication is via the URL path)
 3. Under **Which events would you like to trigger this webhook?**, select **Let me select individual events**, then enable:
-   - ✅ **Pull requests**
+   - ✅ **Pull requests** (includes `review_requested` when the bot is added as reviewer)
    - ✅ **Pull request reviews**
    - ✅ **Pull request review comments**
    - ✅ **Issue comments**

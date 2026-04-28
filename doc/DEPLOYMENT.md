@@ -37,7 +37,7 @@ Save the following as `docker-compose.yml`:
 ```yaml
 services:
   app:
-    image: tmseidel/ai-git-bot:latest
+    image: dakraid/ai-git-bot:latest
     # Or build locally:
     # build: .
     ports:
@@ -84,6 +84,16 @@ volumes:
 | `DATABASE_URL` | JDBC connection URL (default: `jdbc:postgresql://db:5432/giteabot`) |
 | `DATABASE_USERNAME` | Database username (default: `giteabot`) |
 | `DATABASE_PASSWORD` | Database password |
+
+### Docker Hub Publishing
+
+The GitHub Actions Docker publish workflow pushes `dakraid/ai-git-bot:latest` and the Maven project version tag on pushes to `main`.
+Configure these repository secrets before enabling deploys:
+
+| Secret | Description |
+|--------|-------------|
+| `DOCKERHUB_USERNAME` | Docker Hub account or organization user with push access to `dakraid/ai-git-bot`. |
+| `DOCKERHUB_TOKEN` | Docker Hub access token/password for that user. |
 
 ### Agent Configuration (Optional)
 

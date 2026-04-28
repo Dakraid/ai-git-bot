@@ -141,7 +141,7 @@ class BitbucketPayloadTranslationTest {
                 "type": "user",
                 "uuid": "{3c780092-38a5-4801-adb7-0789d2697f64}",
                 "account_id": "5aec2ce958742e214dd095ef",
-                "nickname": "tmseidel"
+                "nickname": "dakraid"
               },
               "pullrequest": {
                 "id": 16,
@@ -171,7 +171,7 @@ class BitbucketPayloadTranslationTest {
 
         // Actor/sender
         assertNotNull(payload.getSender());
-        assertEquals("tmseidel", payload.getSender().getLogin());
+        assertEquals("dakraid", payload.getSender().getLogin());
 
         // Repository
         assertNotNull(payload.getRepository());

@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Handler for GitHub webhook events.
@@ -24,6 +25,8 @@ import java.util.Map;
 @Slf4j
 @Component
 public class GitHubWebhookHandler {
+
+    private static final Pattern GEN_COMMAND = Pattern.compile("(^|\\s)/gen(?=\\s|$)");
 
     private final BotWebhookService botWebhookService;
 
@@ -76,13 +79,30 @@ public class GitHubWebhookHandler {
 
     private ResponseEntity<String> handlePullRequestEvent(Bot bot, WebhookPayload payload) {
         String action = payload.getAction();
+        boolean reviewTriggered = false;
+        boolean generationTriggered = false;
+
         if ("opened".equals(action) || "synchronized".equals(action)) {
             botWebhookService.reviewPullRequest(bot, payload);
-            return ResponseEntity.ok("review triggered");
-        }
-        if ("closed".equals(action)) {
+            reviewTriggered = true;
+        } else if ("review_requested".equals(action) && isRequestedReviewer(bot, payload)) {
+            botWebhookService.reviewPullRequest(bot, payload);
+            reviewTriggered = true;
+        } else if ("closed".equals(action)) {
             botWebhookService.handlePrClosed(bot, payload);
             return ResponseEntity.ok("session closed");
+        }
+
+        if (payload.getPullRequest() != null && containsGenCommand(payload.getPullRequest().getBody())) {
+            botWebhookService.generatePrTitleAndDescription(bot, payload);
+            generationTriggered = true;
+        }
+
+        if (reviewTriggered) {
+            return ResponseEntity.ok("review triggered");
+        }
+        if (generationTriggered) {
+            return ResponseEntity.ok("generation triggered");
         }
         return ResponseEntity.ok("ignored");
     }
@@ -93,13 +113,20 @@ public class GitHubWebhookHandler {
             return ResponseEntity.ok("ignored");
         }
         String body = payload.getComment() != null ? payload.getComment().getBody() : null;
-        if (body == null || !body.contains(botAlias)) {
-            return ResponseEntity.ok("ignored");
-        }
         // Check if the comment is on a PR (issue with pull_request link)
         if (payload.getIssue() != null && payload.getIssue().getPullRequest() != null) {
+            if (containsGenCommand(body)) {
+                botWebhookService.generatePrTitleAndDescription(bot, payload);
+                return ResponseEntity.ok("generation triggered");
+            }
+            if (body == null || !body.contains(botAlias)) {
+                return ResponseEntity.ok("ignored");
+            }
             botWebhookService.handleBotCommand(bot, payload);
             return ResponseEntity.ok("command received");
+        }
+        if (body == null || !body.contains(botAlias)) {
+            return ResponseEntity.ok("ignored");
         }
         // Plain issue comment
         botWebhookService.handleIssueComment(bot, payload);
@@ -163,6 +190,7 @@ public class GitHubWebhookHandler {
         payload.setSender(extractSender(raw));
         payload.setRepository(extractRepository(raw));
         payload.setPullRequest(extractPullRequest((Map<String, Object>) raw.get("pull_request")));
+        payload.setRequestedReviewer(extractOwner((Map<String, Object>) raw.get("requested_reviewer")));
         if (payload.getPullRequest() != null) {
             payload.setNumber(payload.getPullRequest().getNumber());
         }
@@ -228,10 +256,13 @@ public class GitHubWebhookHandler {
 
     @SuppressWarnings("unchecked")
     private WebhookPayload.Owner extractSender(Map<String, Object> raw) {
-        Map<String, Object> sender = (Map<String, Object>) raw.get("sender");
-        if (sender == null) return null;
+        return extractOwner((Map<String, Object>) raw.get("sender"));
+    }
+
+    private WebhookPayload.Owner extractOwner(Map<String, Object> rawOwner) {
+        if (rawOwner == null) return null;
         WebhookPayload.Owner owner = new WebhookPayload.Owner();
-        owner.setLogin((String) sender.get("login"));
+        owner.setLogin((String) rawOwner.get("login"));
         return owner;
     }
 
@@ -354,6 +385,16 @@ public class GitHubWebhookHandler {
             return "synchronized";
         }
         return githubAction;
+    }
+
+    private boolean isRequestedReviewer(Bot bot, WebhookPayload payload) {
+        return bot.getUsername() != null
+                && payload.getRequestedReviewer() != null
+                && bot.getUsername().equalsIgnoreCase(payload.getRequestedReviewer().getLogin());
+    }
+
+    boolean containsGenCommand(String body) {
+        return body != null && GEN_COMMAND.matcher(body).find();
     }
 
     private String mapReviewAction(String githubAction) {

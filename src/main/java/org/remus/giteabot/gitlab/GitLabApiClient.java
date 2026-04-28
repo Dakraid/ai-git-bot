@@ -384,6 +384,21 @@ public class GitLabApiClient implements RepositoryApiClient {
     }
 
     @Override
+    public void updatePullRequest(String owner, String repo, Long pullNumber, String title, String body) {
+        log.info("Updating merge request !{} in {}/{}", pullNumber, owner, repo);
+        String projectPath = encodeProjectPath(owner, repo);
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("title", title);
+        request.put("description", body != null ? body : "");
+        gitlabRestClient.put()
+                .uri("/api/v4/projects/{projectPath}/merge_requests/{iid}", projectPath, pullNumber)
+                .body(request)
+                .retrieve()
+                .toBodilessEntity();
+        log.info("Merge request !{} updated successfully", pullNumber);
+    }
+
+    @Override
     public void deleteBranch(String owner, String repo, String branchName) {
         log.info("Deleting branch '{}' in {}/{}", branchName, owner, repo);
         String projectPath = encodeProjectPath(owner, repo);

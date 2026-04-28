@@ -46,7 +46,7 @@ The bot authenticates against the Gitea API using a personal access token.
 1. Log in as the `ai_bot` user
 2. Go to **Settings → Applications**
 3. Under **Manage Access Tokens**, click **Generate New Token**
-4. Give it a descriptive name, e.g., `ai-gitea-bot`
+4. Give it a descriptive name, e.g., `ai-git-bot`
 5. Select the following **permissions**:
    - ✅ `write:issue` — Post review comments, add reactions
    - ✅ `write:repository` — Read diffs, post pull request reviews

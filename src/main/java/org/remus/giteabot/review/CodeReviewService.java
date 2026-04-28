@@ -15,6 +15,8 @@ import org.remus.giteabot.session.ReviewSession;
 import org.remus.giteabot.session.SessionService;
 
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Core code-review business logic.  Not a Spring-managed singleton — instances
@@ -25,6 +27,8 @@ import java.util.List;
 public class CodeReviewService {
 
     static final int MAX_DIFF_CHARS_FOR_CONTEXT = 60000;
+    private static final Pattern GENERATED_METADATA = Pattern.compile(
+            "(?is)\\bTITLE\\s*:\\s*(.*?)\\R\\s*DESCRIPTION\\s*:\\s*(.*)\\s*");
 
     private final RepositoryApiClient repositoryClient;
     private final AiClient aiClient;
@@ -111,6 +115,42 @@ public class CodeReviewService {
         } catch (Exception e) {
             log.error("Code review failed for PR #{} in {}/{}: {}", prNumber, owner, repo, e.getMessage(), e);
         }
+    }
+
+    public void generatePrTitleAndDescription(WebhookPayload payload, String promptName) {
+        String owner = payload.getRepository().getOwner().getLogin();
+        String repo = payload.getRepository().getName();
+        Long prNumber = resolvePrNumber(payload);
+        String prTitle = resolvePrTitle(payload);
+        String prBody = resolvePrBody(payload);
+
+        log.info("Generating PR metadata for PR #{} in {}/{}", prNumber, owner, repo);
+
+        String diff = repositoryClient.getPullRequestDiff(owner, repo, prNumber);
+        String systemPrompt = promptService.getSystemPrompt(promptName);
+        String userMessage = buildPrMetadataGenerationMessage(prTitle, prBody, diff);
+
+        log.debug("LLM request [chat/prMetadata] for PR #{}: title='{}', body length={}, diff length={}",
+                prNumber, prTitle, prBody != null ? prBody.length() : 0, diff != null ? diff.length() : 0);
+        String generated = aiClient.chat(List.of(), userMessage, systemPrompt, null);
+        log.debug("LLM response [chat/prMetadata] for PR #{}: length={}, preview='{}'",
+                prNumber, generated != null ? generated.length() : 0,
+                generated != null ? generated.substring(0, Math.min(generated.length(), 500)) : "null");
+
+        GeneratedPrMetadata metadata = parseGeneratedMetadata(generated);
+        if (metadata == null) {
+            repositoryClient.postReviewComment(owner, repo, prNumber,
+                    "## 🤖 PR Metadata Draft\n\nI generated PR metadata, but could not safely parse it into "
+                            + "a title and description, so I did not overwrite the PR.\n\n"
+                            + (generated != null ? generated : ""));
+            return;
+        }
+
+        repositoryClient.updatePullRequest(owner, repo, prNumber, metadata.title(), metadata.description());
+        repositoryClient.postReviewComment(owner, repo, prNumber,
+                "## 🤖 PR Metadata Updated\n\nUpdated PR title and description from `/gen`."
+                        + "\n\n**Title:** " + metadata.title());
+        log.info("Generated PR metadata applied for PR #{} in {}/{}", prNumber, owner, repo);
     }
 
     public void handleBotCommand(WebhookPayload payload, String promptName) {
@@ -479,6 +519,73 @@ public class CodeReviewService {
         return "The pull request '" + prTitle + "' has been updated with new changes. " +
                 "Please review the updated diff:\n```diff\n" + truncatedDiff + "\n```";
     }
+
+    String buildPrMetadataGenerationMessage(String prTitle, String prBody, String diff) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Generate a concise pull request title and a collective pull request description ")
+                .append("for the changes below. Respond strictly in this format and with no extra text:\n")
+                .append("TITLE: <title>\nDESCRIPTION:\n<description>\n\n")
+                .append("Original title: ").append(prTitle != null ? prTitle : "").append("\n")
+                .append("Original description:\n").append(prBody != null ? prBody : "").append("\n");
+        if (diff != null && !diff.isBlank()) {
+            String truncatedDiff = diff.length() > MAX_DIFF_CHARS_FOR_CONTEXT
+                    ? diff.substring(0, MAX_DIFF_CHARS_FOR_CONTEXT) + "\n...(truncated)" : diff;
+            sb.append("\nDiff:\n```diff\n").append(truncatedDiff).append("\n```");
+        } else {
+            sb.append("\nNo diff was available. Use the existing title and description context only.");
+        }
+        return sb.toString();
+    }
+
+    GeneratedPrMetadata parseGeneratedMetadata(String generated) {
+        if (generated == null || generated.isBlank()) {
+            return null;
+        }
+        String cleaned = stripMarkdownFence(generated.trim());
+        Matcher matcher = GENERATED_METADATA.matcher(cleaned);
+        if (!matcher.find()) {
+            return null;
+        }
+        String title = firstNonBlankLine(matcher.group(1));
+        String description = matcher.group(2).trim();
+        if (title == null || title.isBlank() || description.isBlank()) {
+            return null;
+        }
+        return new GeneratedPrMetadata(title, description);
+    }
+
+    private String stripMarkdownFence(String value) {
+        if (value.startsWith("```") && value.endsWith("```")) {
+            String withoutOpeningFence = value.substring(value.indexOf('\n') + 1);
+            return withoutOpeningFence.substring(0, withoutOpeningFence.lastIndexOf("```")).trim();
+        }
+        return value;
+    }
+
+    private String firstNonBlankLine(String value) {
+        for (String line : value.strip().split("\\R")) {
+            if (!line.isBlank()) {
+                return line.trim();
+            }
+        }
+        return null;
+    }
+
+    private String resolvePrTitle(WebhookPayload payload) {
+        if (payload.getPullRequest() != null && payload.getPullRequest().getTitle() != null) {
+            return payload.getPullRequest().getTitle();
+        }
+        return payload.getIssue() != null ? payload.getIssue().getTitle() : "";
+    }
+
+    private String resolvePrBody(WebhookPayload payload) {
+        if (payload.getPullRequest() != null && payload.getPullRequest().getBody() != null) {
+            return payload.getPullRequest().getBody();
+        }
+        return payload.getIssue() != null ? payload.getIssue().getBody() : "";
+    }
+
+    record GeneratedPrMetadata(String title, String description) {}
 
     String buildInlineCommentContext(String filePath, String diffHunk, String commentBody) {
         StringBuilder sb = new StringBuilder();

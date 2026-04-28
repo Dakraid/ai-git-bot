@@ -333,6 +333,20 @@ public class BitbucketApiClient implements RepositoryApiClient {
     }
 
     @Override
+    public void updatePullRequest(String owner, String repo, Long pullNumber, String title, String body) {
+        log.info("Updating pull request #{} in {}/{}", pullNumber, owner, repo);
+        Map<String, Object> request = new java.util.LinkedHashMap<>();
+        request.put("title", title);
+        request.put("description", body != null ? body : "");
+        restClient.put()
+                .uri("/repositories/{workspace}/{repo}/pullrequests/{pr_id}", owner, repo, pullNumber)
+                .body(request)
+                .retrieve()
+                .toBodilessEntity();
+        log.info("Pull request #{} updated successfully", pullNumber);
+    }
+
+    @Override
     public void deleteBranch(String owner, String repo, String branchName) {
         log.info("Deleting branch '{}' in {}/{}", branchName, owner, repo);
         try {
