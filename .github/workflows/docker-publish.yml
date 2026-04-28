@@ -33,7 +33,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: dakraid/ai-git-bot
+          images: netrve/ai-git-bot
           tags: |
             type=raw,value=latest
             type=raw,value=${{ steps.version.outputs.VERSION }}
